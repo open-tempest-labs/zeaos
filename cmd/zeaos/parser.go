@@ -53,7 +53,7 @@ func ParseLine(line string) (*Cmd, error) {
 	parts := shellSplit(line)
 	if len(parts) > 0 {
 		switch parts[0] {
-		case "zeaview", "hist", "status", "drop", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
+		case "zeaview", "hist", "status", "drop", "zearun", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
 			cmd.Type = CmdBuiltin
 			cmd.Builtin = parts[0]
 			cmd.Args = parts[1:]
@@ -79,6 +79,13 @@ func parseRHS(cmd *Cmd, rhs string) (*Cmd, error) {
 		q := strings.Trim(strings.TrimSpace(rest), `"'`)
 		cmd.Source = "sql"
 		cmd.RawSQL = q
+		return cmd, nil
+	}
+
+	// zearun NAME [ARGS...] — capture plugin output as table
+	if rest, ok := cutPrefix(rhs, "zearun "); ok {
+		cmd.Source = "zearun"
+		cmd.Args = shellSplit(strings.TrimSpace(rest))
 		return cmd, nil
 	}
 

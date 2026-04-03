@@ -36,6 +36,8 @@ func execAssignment(cmd *Cmd, s *Session) error {
 		return execLoad(cmd, s)
 	case "sql":
 		return execSQL(cmd, s)
+	case "zearun":
+		return execPluginCapture(cmd, s)
 	default:
 		src, err := s.Get(cmd.Source)
 		if err != nil {
@@ -208,8 +210,10 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 			return fmt.Errorf("describe: table name required")
 		}
 		return execDescribe(cmd.Args[0], s)
+	case "zearun":
+		return execPluginRun(cmd.Args, s)
 	case "zeaplugin":
-		return execPlugin(cmd.Args, s)
+		return execPluginManage(cmd.Args)
 	case "zeadrive":
 		return execZeadrive(cmd.Args, s)
 	case "enable-s3":
@@ -263,72 +267,103 @@ func execDescribe(name string, s *Session) error {
 	return nil
 }
 
-// execPlugin runs a zeashell plugin via `zea run`.
-// Syntax: zeaplugin NAME [ARGS...] [→ TARGET] or zeaplugin NAME→TARGET
-func execPlugin(args []string, s *Session) error {
+// execPluginRun streams a plugin's output directly to the terminal.
+// Syntax: zearun NAME [ARGS...]
+func execPluginRun(args []string, s *Session) error {
 	if len(args) == 0 {
-		return fmt.Errorf("zeaplugin: plugin name required")
+		return fmt.Errorf("zearun: plugin name required")
 	}
+	zeaBin, err := exec.LookPath("zea")
+	if err != nil {
+		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
+	}
+	c := exec.Command(zeaBin, append([]string{"run", args[0]}, args[1:]...)...)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
+}
 
-	pluginName := args[0]
-	pluginArgs := args[1:]
-	var target string
-
-	// zeaplugin name → target  (spaced arrow)
-	for i, a := range pluginArgs {
-		if (a == "→" || a == "->") && i+1 < len(pluginArgs) {
-			target = pluginArgs[i+1]
-			pluginArgs = pluginArgs[:i]
-			break
-		}
+// execPluginCapture captures a plugin's CSV output as an Arrow table.
+// Invoked via assignment: t = zearun NAME [ARGS...]
+func execPluginCapture(cmd *Cmd, s *Session) error {
+	if len(cmd.Args) == 0 {
+		return fmt.Errorf("zearun: plugin name required")
 	}
-	// zeaplugin name→target  (no spaces)
-	if target == "" {
-		for _, sep := range []string{"→", "->"} {
-			if idx := strings.Index(pluginName, sep); idx > 0 {
-				target = pluginName[idx+len(sep):]
-				pluginName = pluginName[:idx]
-				break
-			}
-		}
-	}
+	pluginName := cmd.Args[0]
+	pluginArgs := cmd.Args[1:]
 
 	zeaBin, err := exec.LookPath("zea")
 	if err != nil {
-		return fmt.Errorf("zea binary not found in PATH — is zeashell built and installed?")
+		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
 	}
 
-	runArgs := append([]string{"run", pluginName}, pluginArgs...)
-
-	if target == "" {
-		// No capture: stream output directly to terminal
-		c := exec.Command(zeaBin, runArgs...)
-		c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-		return c.Run()
-	}
-
-	// Capture CSV output → Arrow table (via materializeArrow with CSV read)
 	var buf bytes.Buffer
-	c := exec.Command(zeaBin, runArgs...)
+	c := exec.Command(zeaBin, append([]string{"run", pluginName}, pluginArgs...)...)
 	c.Stdout = &buf
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		return fmt.Errorf("plugin %s: %w", pluginName, err)
+		return fmt.Errorf("zearun %s: %w", pluginName, err)
 	}
 
-	tmp := filepath.Join(s.TablesDir, target+"_plugin.csv")
+	tmp := filepath.Join(s.TablesDir, cmd.Target+"_plugin.csv")
 	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
 	defer os.Remove(tmp)
 
 	q := fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(tmp))
-	entry, err := s.materializeArrow(target, q, nil, "",
-		[]string{fmt.Sprintf("plugin(%s)", pluginName)})
+	entry, err := s.materializeArrow(cmd.Target, q, nil, "",
+		[]string{fmt.Sprintf("zearun(%s)", pluginName)})
 	if err != nil {
-		return fmt.Errorf("plugin output: %w", err)
+		return fmt.Errorf("zearun %s: %w", pluginName, err)
 	}
-	fmt.Printf("→ %s: %d rows × %d cols\n", target, entry.RowCount, entry.ColCount)
+	fmt.Printf("→ %s: %d rows × %d cols\n", cmd.Target, entry.RowCount, entry.ColCount)
+	return nil
+}
+
+// execPluginManage handles zeaplugin management subcommands.
+// zeaplugin              — list plugins
+// zeaplugin list         — list plugins
+// zeaplugin <name> --help — show help for a specific plugin
+func execPluginManage(args []string) error {
+	if len(args) == 0 || args[0] == "list" {
+		return execPluginList()
+	}
+	// zeaplugin <name> --help
+	name := args[0]
+	zeaBin, err := exec.LookPath("zea")
+	if err != nil {
+		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
+	}
+	c := exec.Command(zeaBin, "run", name, "--help")
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	return c.Run()
+}
+
+// execPluginList prints all available zeashell plugins from ~/.zea/plugins/.
+func execPluginList() error {
+	home, _ := os.UserHomeDir()
+	pluginDir := filepath.Join(home, ".zea", "plugins")
+	entries, err := os.ReadDir(pluginDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No plugins found. Plugin directory does not exist: ~/.zea/plugins/")
+			return nil
+		}
+		return fmt.Errorf("zeaplugin list: %w", err)
+	}
+	if len(entries) == 0 {
+		fmt.Println("No plugins installed in ~/.zea/plugins/")
+		return nil
+	}
+	fmt.Printf("%-24s  %s\n", "Plugin", "Path")
+	fmt.Println(strings.Repeat("─", 60))
+	for _, e := range entries {
+		if !e.IsDir() {
+			fmt.Printf("%-24s  %s\n", e.Name(),
+				filepath.Join(pluginDir, e.Name()))
+		}
+	}
+	fmt.Println("\nRun 'zeaplugin <name> --help' for usage details.")
 	return nil
 }
 
@@ -373,8 +408,12 @@ DRIVE
     t = load zea://s3-data/file.parquet  cloud file via mounted backend
 
 PLUGINS
-  zeaplugin <name> [args]            run plugin, stream output
-  zeaplugin <name> [args] → <table>  run plugin, capture as table
+  zearun <name> [args]               run plugin, stream output to terminal
+  t = zearun <name> [args]           run plugin, capture CSV output as table
+
+  zeaplugin                          list all available plugins
+  zeaplugin list                     list all available plugins
+  zeaplugin <name> --help            show help for a specific plugin
 
 OTHER
   exit / quit                        exit ZeaOS
