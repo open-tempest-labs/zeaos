@@ -11,10 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time via -ldflags "-X main.version=x.y.z"
+var version = "dev"
+
 func main() {
 	root := &cobra.Command{
 		Use:           "zeaos",
 		Short:         "ZeaOS — Zero-copy Data REPL from Open Tempest Labs",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          runREPL,
