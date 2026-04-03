@@ -85,14 +85,15 @@ zeaos
 ```
 
 ```
-ZeaOS> t = load ~/data/earthquakes.parquet
-→ t: 1_847_204 rows × 12 cols
+ZeaOS> t = load https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+downloading https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet ...
+→ t: 2_964_624 rows × 19 cols
 
-ZeaOS> big = t | where magnitude > 7.0
-→ big: 412 rows × 12 cols
+ZeaOS> big = t | where payment_type = 1
+→ big: 2_183_049 rows × 19 cols
 
-ZeaOS> by_region = big | group region
-→ by_region: 18 rows × 2 cols
+ZeaOS> by_zone = big | group PULocationID
+→ by_zone: 261 rows × 2 cols
 
 ZeaOS> zeaview by_region
 ```
@@ -104,8 +105,9 @@ ZeaOS> zeaview by_region
 ### Loading Data
 
 ```
-t = load <file>              # Parquet, CSV, TSV, JSON, JSONL
-t = zea sql "SELECT ..."     # Arbitrary SQL over session tables
+t = load <file>                    # Parquet, CSV, TSV, JSON, JSONL
+t = load https://host/file.parquet # Remote file — downloaded then loaded
+t = zeaql "SELECT ..."           # Arbitrary SQL over session tables
 t = load zea://data/file.parquet   # Via mounted ZeaDrive
 ```
 
@@ -133,6 +135,8 @@ result = raw | where status = "active" | group region sum(revenue) | top 10
 ```
 t2 = t1                      # Alias / copy
 drop <table>                 # Remove table from session
+save <table> <path>          # Export to file (.parquet / .csv / .json)
+                             #   path may be a zea:// URL
 hist                         # Table lineage DAG (TUI)
 status                       # Session state: tables, drive, memory (TUI)
 describe <table>             # Schema, row/col counts, lineage

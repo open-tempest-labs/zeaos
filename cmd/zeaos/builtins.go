@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/open-tempest-labs/zeashell/tui"
 )
@@ -51,13 +54,60 @@ func execAssignment(cmd *Cmd, s *Session) error {
 }
 
 func execLoad(cmd *Cmd, s *Session) error {
-	file := s.Drive.ExpandPath(cmd.File)
+	file := cmd.File
+
+	// HTTP/HTTPS: download to a temp file, then load via DuckDB as normal.
+	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
+		return execLoadURL(cmd, s, file)
+	}
+
+	file = s.Drive.ExpandPath(file)
 	// If the path routed to the FUSE mount, ensure Volumez is running.
 	if strings.HasPrefix(file, s.Drive.MountPath) {
 		if err := s.Drive.EnsureCloudMount(); err != nil {
 			return err
 		}
 	}
+	return execLoadFile(cmd, s, file, filepath.Base(file))
+}
+
+// execLoadURL downloads a remote file to a temp path and loads it via DuckDB.
+// A 10-minute timeout accommodates large public datasets (e.g. NYC Taxi Parquet ~100 MB).
+func execLoadURL(cmd *Cmd, s *Session, url string) error {
+	fmt.Printf("downloading %s ...\n", url)
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("load %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("load %s: HTTP %s", url, resp.Status)
+	}
+
+	ext := strings.ToLower(filepath.Ext(url))
+	if ext == "" {
+		ext = ".parquet" // sensible default for extension-less URLs
+	}
+	tmp, err := os.CreateTemp("", "zeaos-load-*"+ext)
+	if err != nil {
+		return fmt.Errorf("load %s: %w", url, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		return fmt.Errorf("load %s: %w", url, err)
+	}
+	tmp.Close()
+
+	// Use the URL's base name as the display label in lineage.
+	label := filepath.Base(strings.TrimRight(url, "/"))
+	return execLoadFile(cmd, s, tmpPath, label)
+}
+
+func execLoadFile(cmd *Cmd, s *Session, file, label string) error {
 	ext := strings.ToLower(filepath.Ext(file))
 	var readExpr string
 	switch ext {
@@ -73,9 +123,9 @@ func execLoad(cmd *Cmd, s *Session) error {
 		readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(file))
 	}
 	entry, err := s.materializeArrow(cmd.Target, readExpr, nil, "",
-		[]string{fmt.Sprintf("load(%s)", filepath.Base(file))})
+		[]string{fmt.Sprintf("load(%s)", label)})
 	if err != nil {
-		return fmt.Errorf("load %s: %w", file, err)
+		return fmt.Errorf("load %s: %w", label, err)
 	}
 	fmt.Printf("→ %s: %d rows × %d cols\n", cmd.Target, entry.RowCount, entry.ColCount)
 	return nil
@@ -87,7 +137,20 @@ func execSQL(cmd *Cmd, s *Session) error {
 	for name := range s.Registry {
 		srcs = append(srcs, name)
 	}
-	entry, err := s.materializeArrow(cmd.Target, cmd.RawSQL, srcs, "", []string{"sql"})
+
+	// GROUP BY and PIVOT over Arrow C streams crash DuckDB (same bug as the
+	// pipe path). Route through materializeViaTable so sources are copied to
+	// native DuckDB tables before the aggregation runs.
+	upper := strings.ToUpper(cmd.RawSQL)
+	needsTable := strings.Contains(upper, "GROUP BY") || strings.Contains(upper, "PIVOT")
+
+	var entry *TableEntry
+	var err error
+	if needsTable {
+		entry, err = s.materializeViaTable(cmd.Target, cmd.RawSQL, srcs, "", []string{"sql"})
+	} else {
+		entry, err = s.materializeArrow(cmd.Target, cmd.RawSQL, srcs, "", []string{"sql"})
+	}
 	if err != nil {
 		return fmt.Errorf("sql: %w", err)
 	}
@@ -205,6 +268,11 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		}
 		fmt.Printf("dropped %s\n", cmd.Args[0])
 		return nil
+	case "save":
+		if len(cmd.Args) < 2 {
+			return fmt.Errorf("save: usage: save <table> <path>")
+		}
+		return execSave(cmd.Args[0], cmd.Args[1], s)
 	case "describe":
 		if len(cmd.Args) == 0 {
 			return fmt.Errorf("describe: table name required")
@@ -264,6 +332,54 @@ func execDescribe(name string, s *Session) error {
 			fmt.Printf("Ops:     %s\n", strings.Join(entry.Ops, " | "))
 		}
 	}
+	return nil
+}
+
+// execSave writes a session table to a file. Format is inferred from the
+// extension (.parquet, .csv, .json, .jsonl). zea:// paths are expanded via
+// DriveManager. The cloud mount is started automatically if needed.
+func execSave(name, dest string, s *Session) error {
+	entry, err := s.Get(name)
+	if err != nil {
+		return err
+	}
+
+	path := s.Drive.ExpandPath(dest)
+	if strings.HasPrefix(path, s.Drive.MountPath) {
+		if err := s.Drive.EnsureCloudMount(); err != nil {
+			return err
+		}
+	}
+
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+
+	// If records were evicted to disk and not yet reloaded, fall back to
+	// copying the spill file directly for Parquet output.
+	if entry.records == nil && ext == ".parquet" && entry.FilePath != "" {
+		data, err := os.ReadFile(entry.FilePath)
+		if err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		fmt.Printf("saved %s → %s\n", name, dest)
+		return nil
+	}
+
+	if entry.records == nil || entry.schema == nil {
+		return fmt.Errorf("save: %s has no in-memory records", name)
+	}
+
+	if err := s.SaveTable(entry, path, ext); err != nil {
+		return err
+	}
+	fmt.Printf("saved %s → %s\n", name, dest)
 	return nil
 }
 
@@ -373,7 +489,7 @@ ZeaOS — Command Reference
 
 LOADING
   t = load <file>                    CSV / Parquet / JSON / TSV
-  t = zea sql "SELECT ..."           SQL over session tables
+  t = zeaql "SELECT ..."             SQL over session tables
 
 TRANSFORMS  (chainable with |)
   t2 = t1 | where <expr>             filter rows     e.g. amount > 100
@@ -386,6 +502,8 @@ TRANSFORMS  (chainable with |)
 SESSION
   t2 = t1                            alias / copy a table
   drop <table>                       remove table from session
+  save <table> <path>                export to file  (.parquet / .csv / .json)
+                                     path may be a zea:// URL
   hist                               table lineage DAG (TUI)
   status                             session status: tables, drive, memory (TUI)
 

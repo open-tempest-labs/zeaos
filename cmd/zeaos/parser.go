@@ -28,7 +28,7 @@ type Cmd struct {
 	Target  string   // LHS of assignment (t1)
 	Source  string   // RHS source: table name, "load", or "sql"
 	File    string   // resolved file path for load
-	RawSQL  string   // query string for zea sql "..."
+	RawSQL  string   // query string for zeaql "..."
 	Ops     []PipeOp // pipe operations after the source table
 	Builtin string   // name of builtin command
 	Args    []string // args to builtin or OS pipe
@@ -53,7 +53,7 @@ func ParseLine(line string) (*Cmd, error) {
 	parts := shellSplit(line)
 	if len(parts) > 0 {
 		switch parts[0] {
-		case "zeaview", "hist", "status", "drop", "zearun", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
+		case "zeaview", "hist", "status", "drop", "save", "zearun", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
 			cmd.Type = CmdBuiltin
 			cmd.Builtin = parts[0]
 			cmd.Args = parts[1:]
@@ -74,8 +74,8 @@ func parseRHS(cmd *Cmd, rhs string) (*Cmd, error) {
 		return cmd, nil
 	}
 
-	// zea sql "QUERY"
-	if rest, ok := cutPrefix(rhs, "zea sql "); ok {
+	// zeaql "QUERY"
+	if rest, ok := cutPrefix(rhs, "zeaql "); ok {
 		q := strings.Trim(strings.TrimSpace(rest), `"'`)
 		cmd.Source = "sql"
 		cmd.RawSQL = q

@@ -330,9 +330,15 @@ func (s *Session) materializeViaTable(target, query string, srcs []string, paren
 		if copyErr != nil {
 			for _, st := range srcTables {
 				_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %q`, st.tmp))
+				_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP VIEW IF EXISTS %q`, st.name))
 			}
 			return nil, fmt.Errorf("copy %q to table: %w", src, copyErr)
 		}
+
+		// Expose under the user-facing name so unquoted references in zeaql
+		// queries (e.g. FROM trips) resolve to the native table, not the Arrow stream.
+		_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP VIEW IF EXISTS %q`, src))
+		_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`CREATE VIEW %q AS SELECT * FROM %q`, src, tmp))
 
 		srcTables = append(srcTables, srcTable{name: src, tmp: tmp})
 	}
@@ -349,8 +355,9 @@ func (s *Session) materializeViaTable(target, query string, srcs []string, paren
 	_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %q`, tmpResult))
 	_, execErr := s.arrowConn.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE %q AS %s`, tmpResult, nativeQuery))
 
-	// Tear down source temp tables.
+	// Tear down source temp tables and their user-facing views.
 	for _, st := range srcTables {
+		_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP VIEW IF EXISTS %q`, st.name))
 		_, _ = s.arrowConn.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %q`, st.tmp))
 	}
 
@@ -400,6 +407,36 @@ func (s *Session) materializeViaTable(target, query string, srcs []string, paren
 	}
 	s.Registry[target] = entry
 	return entry, nil
+}
+
+// SaveTable writes a table's Arrow records to a user-specified path.
+// Format is determined by ext: .parquet, .csv, .json, .jsonl; anything else
+// defaults to CSV. Uses DuckDB COPY so the Arrow scan predicate pushdown bug
+// is not a concern (COPY reads all rows unconditionally).
+func (s *Session) SaveTable(entry *TableEntry, path, ext string) error {
+	ctx := context.Background()
+	sn := scanID()
+	rdr := newRecordSliceReader(entry.schema, entry.records)
+	release, err := s.arrow.RegisterView(rdr, sn)
+	if err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+	defer release()
+
+	var copySQL string
+	switch ext {
+	case ".parquet":
+		copySQL = fmt.Sprintf(`COPY (SELECT * FROM %q) TO '%s' (FORMAT PARQUET)`, sn, sqlEsc(path))
+	case ".csv":
+		copySQL = fmt.Sprintf(`COPY (SELECT * FROM %q) TO '%s' (FORMAT CSV, HEADER)`, sn, sqlEsc(path))
+	case ".json", ".jsonl":
+		copySQL = fmt.Sprintf(`COPY (SELECT * FROM %q) TO '%s' (FORMAT JSON)`, sn, sqlEsc(path))
+	default:
+		copySQL = fmt.Sprintf(`COPY (SELECT * FROM %q) TO '%s' (FORMAT CSV, HEADER)`, sn, sqlEsc(path))
+	}
+
+	_, err = s.arrowConn.ExecContext(ctx, copySQL)
+	return err
 }
 
 // spillOne writes a single table's Arrow records to its Parquet spill file.

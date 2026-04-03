@@ -6,7 +6,7 @@ ZeaOS is an interactive REPL that orchestrates zeashell libraries (SQL, file I/O
 text
 CORE (tables + assignment)
 t1 = load ducks.parquet              # Arrow table from file
-t1 = zea sql "SELECT ..."            # Explicit SQL → Arrow table
+t1 = zeaql "SELECT ..."            # Explicit SQL → Arrow table
 t1 = t2 | where speed>100            # Shorthand → new table
 t1 = t1 | pivot speed→rating         # In-place reassignment
 
@@ -25,7 +25,7 @@ zeaplugin fast-ducks           # Run saved pipeline → Arrow table
 zeadrive ls /home/data         # Volumez filesystem commands
 
 OS INTEGRATION
-ls | zea sql "SELECT COUNT(*) FROM stdin" | zeaview
+ls | zeaql "SELECT COUNT(*) FROM stdin" | zeaview
 cat data.parquet | zeaview
 
 ```

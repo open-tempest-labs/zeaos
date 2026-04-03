@@ -20,12 +20,15 @@ zeaos
 
 ## Loading the Data
 
+The NYC TLC publishes monthly Parquet files directly over HTTPS — no account or API key required. ZeaOS downloads the file, hands it to DuckDB, and retains the result as Arrow record batches, all in one step:
+
 ```
-ZeaOS> trips = load ~/data/yellow_tripdata_2024-01.parquet
+ZeaOS> trips = load https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+downloading https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet ...
 → trips: 2_964_624 rows × 19 cols
 ```
 
-The Parquet file is read by DuckDB and the result is retained in memory as Apache Arrow record batches. From this point forward, `trips` is never written to disk again during the session — it lives entirely in Arrow memory.
+The file is about 50 MB on the wire. On a typical broadband connection it loads in under a minute. ZeaOS streams it to a temp file, passes the path to DuckDB's `read_parquet`, pulls the result into Arrow record batches, and deletes the temp file. From this point forward, `trips` lives entirely in Arrow memory — nothing is written to disk during the session.
 
 Get a quick look at the schema:
 
@@ -102,7 +105,7 @@ These work correctly. But they only work correctly because ZeaOS evaluates `wher
 
 ```
 ZeaOS> by_payment = trips | group payment_type
-→ by_payment: 6 rows × 2 cols
+→ by_payment: 5 rows × 2 cols
 
 ZeaOS> zeaview by_payment
 ```
@@ -114,15 +117,14 @@ ZeaOS> zeaview by_payment
 | 0 | 22098 |
 | 4 | 1538 |
 | 5 | 598 |
-| 3 | 0 |
 
-Credit card (1) dominates. Cash (2) is about a quarter of trips. The small counts for 0, 3, 4, 5 represent no-charge, dispute, and unknown categories.
+Credit card (1) dominates. Cash (2) is about a quarter of trips. The small counts for 0, 4, and 5 represent no-charge and unknown categories. Payment type 3 (dispute) has no recorded trips in this month.
 
 Now let's see average tip by payment type — this requires a SQL expression since we want `AVG` rather than `COUNT`:
 
 ```
-ZeaOS> avg_tip = zea sql "SELECT payment_type, ROUND(AVG(tip_amount), 2) AS avg_tip, COUNT(*) AS trips FROM trips GROUP BY payment_type ORDER BY avg_tip DESC"
-→ avg_tip: 6 rows × 3 cols
+ZeaOS> avg_tip = zeaql "SELECT payment_type, ROUND(AVG(tip_amount), 2) AS avg_tip, COUNT(*) AS trips FROM trips GROUP BY payment_type ORDER BY avg_tip DESC"
+→ avg_tip: 5 rows × 3 cols
 
 ZeaOS> zeaview avg_tip
 ```
@@ -131,7 +133,6 @@ ZeaOS> zeaview avg_tip
 |---|---|---|
 | 1 | 3.84 | 2183049 |
 | 0 | 0.00 | 22098 |
-| 3 | 0.00 | 0 |
 | 4 | 0.00 | 1538 |
 | 5 | 0.00 | 598 |
 | 2 | 0.00 | 757341 |
@@ -148,7 +149,7 @@ Credit card passengers tip an average of $3.84. Cash passengers tip $0.00 — al
 >
 > **ZeaOS's fix:** For GROUP BY and PIVOT operations, ZeaOS copies the source Arrow records into a native DuckDB in-memory table first (a simple `CREATE TABLE AS SELECT *` — no aggregation, which the Arrow stream handles fine), runs the aggregation against the native table, then reads the result back as Arrow. Only the source records for that specific operation are copied; the aggregated result is small. The working data for the session remains in Arrow throughout.
 >
-> The `zea sql` path (used for `AVG` above) works correctly because it reads from Parquet-originated or natively materialized DuckDB tables, bypassing the Arrow stream entirely.
+> The `zeaql` path (used for `AVG` above) works correctly because it reads from Parquet-originated or natively materialized DuckDB tables, bypassing the Arrow stream entirely.
 >
 > *This aside will be removed or revised once the underlying DuckDB issue is resolved.*
 
@@ -164,7 +165,7 @@ ZeaOS> long_trips = trips | where trip_distance > 2.0
 ```
 
 ```
-ZeaOS> zone_revenue = zea sql "SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(fare_amount), 2) AS total_fare, ROUND(AVG(tip_amount), 2) AS avg_tip FROM long_trips GROUP BY PULocationID ORDER BY total_fare DESC"
+ZeaOS> zone_revenue = zeaql "SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(fare_amount), 2) AS total_fare, ROUND(AVG(tip_amount), 2) AS avg_tip FROM long_trips GROUP BY PULocationID ORDER BY total_fare DESC"
 → zone_revenue: 262 rows × 4 cols
 ```
 
@@ -186,7 +187,7 @@ Press `e` to export the current view as CSV if you want to share the raw numbers
 Now let's look at how payment type breaks down across the top pickup zones. First build the source:
 
 ```
-ZeaOS> zone_payment = zea sql "SELECT PULocationID, payment_type, COUNT(*) AS trips FROM long_trips WHERE PULocationID IN (SELECT PULocationID FROM top_zones) GROUP BY PULocationID, payment_type"
+ZeaOS> zone_payment = zeaql "SELECT PULocationID, payment_type, COUNT(*) AS trips FROM long_trips WHERE PULocationID IN (SELECT PULocationID FROM top_zones) GROUP BY PULocationID, payment_type"
 → zone_payment: 54 rows × 3 cols
 ```
 
@@ -219,7 +220,7 @@ session
     │   │   └── top_zones  [10 rows × 4 cols]  → top(10)
     │   └── zone_payment  [54 rows × 3 cols]  → sql
     │       └── payment_pivot  [10 rows × 7 cols]  → pivot(payment_type→trips)
-    └── avg_tip  [6 rows × 2 cols]  → sql
+    └── avg_tip  [5 rows × 3 cols]  → sql
 ```
 
 Every transformation is tracked. Nothing was written to disk.
@@ -228,34 +229,23 @@ Every transformation is tracked. Nothing was written to disk.
 
 ## Saving Results to ZeaDrive
 
-The `top_zones` and `payment_pivot` tables are the outputs worth keeping. Save them to local ZeaDrive storage first:
+The `top_zones` and `payment_pivot` tables are the outputs worth keeping. Use `save` to write them to ZeaDrive local storage — ZeaOS creates the directory automatically:
 
 ```
-ZeaOS> ls zea://taxi-analysis/
-ls: /Users/you/.zeaos/local/taxi-analysis: No such file or directory
+ZeaOS> save top_zones zea://taxi-analysis/top_zones.parquet
+saved top_zones → zea://taxi-analysis/top_zones.parquet
 
-ZeaOS> mkdir zea://taxi-analysis
-ZeaOS> ls zea://taxi-analysis/
+ZeaOS> save payment_pivot zea://taxi-analysis/payment_pivot.parquet
+saved payment_pivot → zea://taxi-analysis/payment_pivot.parquet
 ```
 
-ZeaOS doesn't yet have a native `save` command — tables spill to `~/.zeaos/tables/` automatically on exit and restore on next launch. To export explicitly as Parquet for use outside ZeaOS, use `zea sql` with DuckDB's COPY:
+`save` infers the format from the extension — `.parquet`, `.csv`, and `.json` are all supported. The `zea://` prefix routes to `~/.zeaos/local/` with no setup required.
+
+To push to a cloud S3 backend (requires `enable-s3` configured):
 
 ```
-ZeaOS> zea sql "COPY (SELECT * FROM top_zones) TO '/Users/you/.zeaos/local/taxi-analysis/top_zones.parquet' (FORMAT PARQUET)"
-ZeaOS> zea sql "COPY (SELECT * FROM payment_pivot) TO '/Users/you/.zeaos/local/taxi-analysis/payment_pivot.parquet' (FORMAT PARQUET)"
-```
-
-To push to S3 (requires `enable-s3` configured):
-
-```
-ZeaOS> zea sql "COPY (SELECT * FROM top_zones) TO 's3://your-bucket/taxi-analysis/top_zones.parquet' (FORMAT PARQUET)"
-ZeaOS> zea sql "COPY (SELECT * FROM payment_pivot) TO 's3://your-bucket/taxi-analysis/payment_pivot.parquet' (FORMAT PARQUET)"
-```
-
-Or if zeadrive is mounted:
-
-```
-ZeaOS> zea sql "COPY (SELECT * FROM top_zones) TO '/Users/you/zeadrive/s3-data/taxi-analysis/top_zones.parquet' (FORMAT PARQUET)"
+ZeaOS> save top_zones zea://s3-data/taxi-analysis/top_zones.parquet
+ZeaOS> save payment_pivot zea://s3-data/taxi-analysis/payment_pivot.parquet
 ```
 
 On any other machine with ZeaOS and the same S3 backend configured, these files are immediately accessible via `zea://s3-data/taxi-analysis/`.
