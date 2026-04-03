@@ -2,7 +2,7 @@
 
 *A walkthrough of ZeaOS's Arrow-native data pipeline — from raw Parquet to cloud storage — including the technical gaps we had to close to make DuckDB and Apache Arrow work together reliably at the query layer.*
 
-<img width="1528" height="850" alt="image" src="https://github.com/user-attachments/assets/b3d66cd1-aa55-453b-9009-76cdedb9dd97" />
+<img width="764" height="425" alt="image" src="https://github.com/user-attachments/assets/b3d66cd1-aa55-453b-9009-76cdedb9dd97" />
 
 ---
 
