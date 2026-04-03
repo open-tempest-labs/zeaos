@@ -51,8 +51,8 @@ The REPL itself. Manages a session registry of Arrow tables, dispatches commands
 ### ZeaShell
 The library layer. Provides the TUI table viewer (`zeaview`), the WHERE expression parser used by the Arrow-native filter path, and the plugin execution runtime (`zea run`). [→ github.com/open-tempest-labs/zeashell](https://github.com/open-tempest-labs/zeashell)
 
-### ZeaDrive (powered by Volumez)
-A FUSE-mounted volume accessible via the `zea://` URL scheme. Mount once, reference data from anywhere in your session without knowing the actual mount path. Regular POSIX shell commands (`ls`, `cp`, `rm`) work against the mounted path once the drive is up. [→ github.com/open-tempest-labs/volumez](https://github.com/open-tempest-labs/volumez)
+### ZeaDrive
+A unified data path layer accessible via the `zea://` URL scheme. Works out of the box with no setup — `zea://` resolves to local storage at `~/.zeaos/local/`. Cloud backends (S3-compatible) can be added with `enable-s3` and are accessed via `zea://s3-data/` (or whatever name you configure), backed by [Volumez](https://github.com/open-tempest-labs/volumez) FUSE. [→ github.com/open-tempest-labs/volumez](https://github.com/open-tempest-labs/volumez)
 
 ---
 
@@ -63,13 +63,18 @@ brew tap open-tempest-labs/zeaos
 brew install zeaos
 ```
 
-### ZeaDrive (macFUSE required)
+### ZeaDrive
 
-ZeaDrive mounts a Volumez-backed volume at `zea://`, enabling cross-machine session portability — load your tables on one machine, sync to a ZeaDrive volume, and resume on any other machine with ZeaOS installed.
+`zea://` paths work immediately after install — no additional setup needed for local storage:
 
-ZeaDrive requires **macFUSE**, which involves approving a system kernel extension in **System Settings → Privacy & Security** and a reboot. On Apple Silicon you may also need to reduce the startup security policy in Recovery Mode to permit third-party kernel extensions.
+```sh
+ZeaOS> t = load zea://mydata/sales.parquet    # ~/.zeaos/local/mydata/sales.parquet
+ZeaOS> ls zea://mydata/                        # browse via shell
+```
 
-**→ See the full [Installation Guide](docs/installation.md) for step-by-step macFUSE setup including Apple Silicon instructions.**
+To add an S3-compatible cloud backend, run `enable-s3` inside ZeaOS. This opens a configuration form and writes `~/.zeaos/volumez.json`. Cloud paths then mount automatically on first access via [Volumez](https://github.com/open-tempest-labs/volumez).
+
+Cloud backends require **macFUSE** and **Volumez** to be installed. See the [Installation Guide](docs/installation.md) for details including the macFUSE kernel extension approval process on macOS and Apple Silicon.
 
 ---
 
@@ -144,17 +149,27 @@ zeaview <table>              # TUI viewer
 
 ### ZeaDrive
 
-```
-zeadrive mount [path]        # Mount volume (default ~/zeadrive)
-zeadrive unmount             # Unmount
-zeadrive status              # Show mount path and status
-```
-
-Reference mounted files with `zea://` from anywhere — load commands, shell commands piped through the REPL, anywhere a path appears:
+`zea://` paths work everywhere with no mount required for local storage:
 
 ```
-ZeaOS> t = load zea://datasets/sales_2025.parquet
-ZeaOS> ls zea://datasets/
+t = load zea://data/sales.parquet        # local: ~/.zeaos/local/data/sales.parquet
+ls zea://data/                           # shell commands work too
+cp ~/downloads/file.csv zea://data/      # copy files in
+```
+
+To add a cloud backend:
+
+```
+enable-s3                                # opens TUI form, writes ~/.zeaos/volumez.json
+```
+
+Once configured, cloud paths mount automatically on first access:
+
+```
+t = load zea://s3-data/warehouse/sales.parquet   # mounts Volumez, then loads
+zeadrive status                                   # show local path, backends, mount state
+zeadrive mount                                    # explicit mount (optional)
+zeadrive unmount                                  # unmount cloud backends
 ```
 
 ### Plugins
@@ -185,7 +200,9 @@ zeaos (REPL)
 ├── arrowfilter       WHERE evaluation via Arrow compute (zero-copy)
 ├── DuckDB CGO        GROUP BY, PIVOT, file I/O, SQL engine
 ├── ZeaShell libs     TUI viewer, expression parser, plugin runtime
-└── ZeaDrive          zea:// volume mount via Volumez FUSE
+└── ZeaDrive
+    ├── zea://         → ~/.zeaos/local/  (always available, no setup)
+    └── zea://<name>/  → ~/zeadrive/<name>/  (Volumez FUSE, cloud backends)
 ```
 
 **Zero-copy design.** Session tables live as Apache Arrow record batches. Filter operations (`where`) use Arrow compute directly — DuckDB never sees the predicate. Projection and aggregation go through DuckDB's Arrow C Data Interface, reading in-place where possible. No intermediate Parquet files during a session.
