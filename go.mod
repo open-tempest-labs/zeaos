@@ -3,10 +3,11 @@ module github.com/open-tempest-labs/zeaos
 go 1.24.2
 
 require (
+	github.com/apache/arrow-go/v18 v18.1.0
 	github.com/chzyer/readline v1.5.1
 	github.com/gdamore/tcell/v2 v2.13.8
 	github.com/marcboeker/go-duckdb v1.8.5
-	github.com/open-tempest-labs/zeashell v0.0.0-00010101000000-000000000000
+	github.com/open-tempest-labs/zeashell v0.5.0
 	github.com/rivo/tview v0.42.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.37.0
@@ -15,8 +16,6 @@ require (
 require (
 	github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
-	github.com/apache/arrow-go/v18 v18.1.0 // indirect
-	github.com/apache/arrow/go/v18 v18.0.0-20241007013041-ab95a4d25142 // indirect
 	github.com/apache/thrift v0.21.0 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
@@ -48,5 +47,3 @@ require (
 	google.golang.org/grpc v1.69.2 // indirect
 	google.golang.org/protobuf v1.36.1 // indirect
 )
-
-replace github.com/open-tempest-labs/zeashell => ../zeashell
