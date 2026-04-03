@@ -1,0 +1,16 @@
+# Compiled binary
+/zeaos
+/cmd/zeaos/zeaos
+
+# Go build cache
+*.test
+*.out
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
