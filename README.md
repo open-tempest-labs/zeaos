@@ -175,11 +175,15 @@ zeadrive unmount                                  # unmount cloud backends
 ### Plugins
 
 ```
-zeaplugin <name> [args]             # Run plugin, stream output to terminal
-zeaplugin <name> [args] → <table>   # Capture plugin CSV output as table
+zearun <name> [args]                # Run plugin, stream output to terminal
+t = zearun <name> [args]            # Run plugin, capture CSV output as table
+
+zeaplugin                           # List all available plugins
+zeaplugin list                      # List all available plugins
+zeaplugin <name> --help             # Show help for a specific plugin
 ```
 
-Plugins are discovered from `~/.zea/plugins/`. Use `zea run --help` to list available plugins and their arguments.
+Plugins are discovered from `~/.zea/plugins/`. Use `zea pluginate` from zeashell to create new plugins from your shell history.
 
 ### Other
 
