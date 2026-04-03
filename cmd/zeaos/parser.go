@@ -53,7 +53,7 @@ func ParseLine(line string) (*Cmd, error) {
 	parts := shellSplit(line)
 	if len(parts) > 0 {
 		switch parts[0] {
-		case "zeaview", "hist", "status", "drop", "zeaplugin", "zeadrive", "describe", "?", "help":
+		case "zeaview", "hist", "status", "drop", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
 			cmd.Type = CmdBuiltin
 			cmd.Builtin = parts[0]
 			cmd.Args = parts[1:]
@@ -281,12 +281,3 @@ func expandHome(path string) string {
 	return path
 }
 
-// expandDrive resolves a zea:// path to an absolute path under mountPath.
-// zea://foo/bar.parquet → {mountPath}/foo/bar.parquet
-// Non-zea:// paths are returned unchanged.
-func expandDrive(path, mountPath string) string {
-	if rest, ok := strings.CutPrefix(path, "zea://"); ok {
-		return filepath.Join(mountPath, rest)
-	}
-	return path
-}

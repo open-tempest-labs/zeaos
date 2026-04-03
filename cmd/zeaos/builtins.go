@@ -49,7 +49,13 @@ func execAssignment(cmd *Cmd, s *Session) error {
 }
 
 func execLoad(cmd *Cmd, s *Session) error {
-	file := expandDrive(cmd.File, s.Drive.MountPath)
+	file := s.Drive.ExpandPath(cmd.File)
+	// If the path routed to the FUSE mount, ensure Volumez is running.
+	if strings.HasPrefix(file, s.Drive.MountPath) {
+		if err := s.Drive.EnsureCloudMount(); err != nil {
+			return err
+		}
+	}
 	ext := strings.ToLower(filepath.Ext(file))
 	var readExpr string
 	switch ext {
@@ -206,6 +212,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPlugin(cmd.Args, s)
 	case "zeadrive":
 		return execZeadrive(cmd.Args, s)
+	case "enable-s3":
+		return s.Drive.execEnableS3()
 	case "?", "help":
 		execHelp()
 		return nil
@@ -352,13 +360,17 @@ VIEWER
                                      g graph, e export, d schema, ? help)
 
 DRIVE
-  zeadrive mount [path]              mount zeadrive (FUSE), default ~/zeadrive
-  zeadrive unmount                   unmount zeadrive
-  zeadrive status                    show mount status
+  zea:// paths work everywhere — no mount required for local storage:
+    t = load zea://data/file.parquet     local file in ~/.zeaos/local/data/
+    ls zea://data/                       browse via shell commands
 
-  Use zea:// paths to reference files on the drive without knowing the mount point:
-    t = load zea://data/file.parquet
-  Use shell commands (ls, cp, rm, etc.) to browse the mounted drive directly.
+  Cloud backends (S3-compatible) require zeadrive:
+    enable-s3                          configure S3 backend (opens TUI form)
+    zeadrive mount                     mount cloud backends at ~/zeadrive
+    zeadrive unmount                   unmount
+    zeadrive status                    show local path, mount status, backends
+
+    t = load zea://s3-data/file.parquet  cloud file via mounted backend
 
 PLUGINS
   zeaplugin <name> [args]            run plugin, stream output
@@ -377,10 +389,17 @@ func execZeadrive(args []string, s *Session) error {
 }
 
 // execOSPipe falls back to the system shell for unrecognised input.
-// Any zea:// tokens in the command are expanded to the drive mount path first.
+// Any zea:// tokens are expanded via DriveManager before passing to the shell.
 func execOSPipe(line string, s *Session) error {
 	if strings.Contains(line, "zea://") {
-		line = strings.ReplaceAll(line, "zea://", s.Drive.MountPath+"/")
+		// Replace each zea:// token individually so backend vs local routing applies.
+		parts := strings.Fields(line)
+		for i, p := range parts {
+			if strings.Contains(p, "zea://") {
+				parts[i] = s.Drive.ExpandPath(p)
+			}
+		}
+		line = strings.Join(parts, " ")
 	}
 	c := exec.Command("sh", "-c", line)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr

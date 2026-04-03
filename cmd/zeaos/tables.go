@@ -116,6 +116,7 @@ func (s *Session) Close() {
 	}
 	_ = s.arrowConn.Close()
 	_ = s.db.Close()
+	s.Drive.Stop()
 }
 
 // TablePath returns the canonical Parquet spill path for a named table.
