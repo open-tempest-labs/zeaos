@@ -56,6 +56,23 @@ A FUSE-mounted volume accessible via the `zea://` URL scheme. Mount once, refere
 
 ---
 
+## Installation
+
+```sh
+brew tap open-tempest-labs/zeaos
+brew install zeaos
+```
+
+### ZeaDrive (macFUSE required)
+
+ZeaDrive mounts a Volumez-backed volume at `zea://`, enabling cross-machine session portability — load your tables on one machine, sync to a ZeaDrive volume, and resume on any other machine with ZeaOS installed.
+
+ZeaDrive requires **macFUSE**, which involves approving a system kernel extension in **System Settings → Privacy & Security** and a reboot. On Apple Silicon you may also need to reduce the startup security policy in Recovery Mode to permit third-party kernel extensions.
+
+**→ See the full [Installation Guide](docs/installation.md) for step-by-step macFUSE setup including Apple Silicon instructions.**
+
+---
+
 ## Quick Start
 
 ```
