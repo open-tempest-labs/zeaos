@@ -25,9 +25,9 @@ type volConfig struct {
 }
 
 type volMount struct {
-	Path    string            `json:"path"`
-	Backend string            `json:"backend"`
-	Config  map[string]string `json:"config"`
+	Path    string                 `json:"path"`
+	Backend string                 `json:"backend"`
+	Config  map[string]interface{} `json:"config"`
 }
 
 type volCache struct {
@@ -247,7 +247,8 @@ func (d *DriveManager) execStatus() error {
 		fmt.Println("Backends:")
 		for _, m := range cfg.Mounts {
 			name := strings.TrimPrefix(m.Path, "/")
-			fmt.Printf("  zea://%s/  → %s  (bucket: %s)\n", name, m.Backend, cfg.Mounts[0].Config["bucket"])
+			bucket, _ := m.Config["bucket"].(string)
+			fmt.Printf("  zea://%s/  → %s  (bucket: %s)\n", name, m.Backend, bucket)
 		}
 	} else {
 		fmt.Println("No cloud backends configured. Run 'zeadrive enable-s3' to add one.")
@@ -353,7 +354,7 @@ func (d *DriveManager) execEnableS3() error {
 		if name == "" {
 			name = "s3-data"
 		}
-		c := map[string]string{
+		c := map[string]interface{}{
 			"bucket": bucket,
 			"region": region,
 		}
