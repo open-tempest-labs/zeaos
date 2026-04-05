@@ -286,8 +286,14 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPluginManage(cmd.Args)
 	case "zeadrive":
 		return execZeadrive(cmd.Args, s)
-	case "dbt":
-		return execDbt(cmd.Args, s)
+	case "promote":
+		return execPromote(cmd.Args, s)
+	case "list":
+		return execList(cmd.Args, s)
+	case "validate":
+		return execValidate(cmd.Args, s)
+	case "export":
+		return execExport(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":
@@ -529,13 +535,14 @@ DRIVE
 
     t = load zea://s3-data/file.parquet  cloud file via mounted backend
 
-DBT EXPORT
-  dbt promote <table> [as <name>] [model|semantic]
-                                     mark table for dbt export
-  dbt list                           list promoted artifacts
-  dbt validate [<name>]              check portability without writing files
-  dbt export [<name>] [--target DIR] write dbt Core project files
-  dbt <subcommand>                   any other subcommand passed to dbt CLI
+PROMOTE & EXPORT
+  promote <table> [as <name>] [model|semantic]
+                                     mark table for export promotion
+  list                               list session tables
+  list --type=promotions             list promoted artifacts
+  validate <name> --target=dbt       check portability for target
+  export [<name>] --target=dbt [-o DIR]
+                                     write export bundle (default dir: ./zea-dbt-export)
 
 PLUGINS
   zearun <name> [args]               run plugin, stream output to terminal

@@ -12,7 +12,7 @@ import (
 	"unicode"
 )
 
-// PromotedArtifact records a table marked for dbt export.
+// PromotedArtifact records a table marked for export.
 type PromotedArtifact struct {
 	ExportName   string    `json:"export_name"`
 	Kind         string    `json:"kind"`          // "model" | "semantic"
@@ -20,37 +20,30 @@ type PromotedArtifact struct {
 	PromotedAt   time.Time `json:"promoted_at"`
 }
 
-// execDbt dispatches dbt subcommands. Known zeaos subcommands are handled
-// internally; anything else is passed through to the dbt CLI via execOSPipe.
-func execDbt(args []string, s *Session) error {
-	if len(args) == 0 {
-		return execDbtHelp()
+// parseExportArgs extracts --target=FORMAT, --output=DIR / -o DIR from args.
+// Returns the format, output path, and remaining positional args.
+func parseExportArgs(args []string) (format, output string, rest []string) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case strings.HasPrefix(args[i], "--target="):
+			format = strings.TrimPrefix(args[i], "--target=")
+		case strings.HasPrefix(args[i], "--output="):
+			output = strings.TrimPrefix(args[i], "--output=")
+		case (args[i] == "-o" || args[i] == "--output") && i+1 < len(args):
+			i++
+			output = args[i]
+		default:
+			rest = append(rest, args[i])
+		}
 	}
-	sub := args[0]
-	rest := args[1:]
-	switch sub {
-	case "promote":
-		return execDbtPromote(rest, s)
-	case "list":
-		return execDbtList(s)
-	case "validate":
-		return execDbtValidate(rest, s)
-	case "export":
-		return execDbtExport(rest, s)
-	case "help":
-		return execDbtHelp()
-	default:
-		// Pass unknown subcommands to the dbt CLI so users can run
-		// dbt run, dbt test, dbt debug etc. from within the REPL.
-		return execOSPipe("dbt "+strings.Join(args, " "), s)
-	}
+	return
 }
 
-// --- dbt promote ---
+// --- promote ---
 
-func execDbtPromote(args []string, s *Session) error {
+func execPromote(args []string, s *Session) error {
 	if len(args) == 0 {
-		return fmt.Errorf("dbt promote: table name required")
+		return fmt.Errorf("promote: table name required")
 	}
 	tableName := args[0]
 	if _, err := s.Get(tableName); err != nil {
@@ -64,7 +57,7 @@ func execDbtPromote(args []string, s *Session) error {
 	rest := args[1:]
 	if len(rest) > 0 && rest[0] == "as" {
 		if len(rest) < 2 {
-			return fmt.Errorf("dbt promote: expected name after 'as'")
+			return fmt.Errorf("promote: expected name after 'as'")
 		}
 		exportName = rest[1]
 		rest = rest[2:]
@@ -74,12 +67,12 @@ func execDbtPromote(args []string, s *Session) error {
 		case "model", "semantic":
 			kind = rest[0]
 		default:
-			return fmt.Errorf("dbt promote: unknown kind %q — use 'model' or 'semantic'", rest[0])
+			return fmt.Errorf("promote: unknown kind %q — use 'model' or 'semantic'", rest[0])
 		}
 	}
 
 	if !isValidDbtName(exportName) {
-		return fmt.Errorf("dbt promote: %q is not a valid dbt model name (lowercase, alphanumeric + underscores, start with letter)", exportName)
+		return fmt.Errorf("promote: %q is not a valid dbt model name (lowercase, alphanumeric + underscores, start with letter)", exportName)
 	}
 
 	s.Promoted[exportName] = &PromotedArtifact{
@@ -92,11 +85,41 @@ func execDbtPromote(args []string, s *Session) error {
 	return nil
 }
 
-// --- dbt list ---
+// --- list ---
 
-func execDbtList(s *Session) error {
+// execList shows session tables (default) or promoted artifacts (--type=promotions).
+func execList(args []string, s *Session) error {
+	listType := "tables"
+	for _, a := range args {
+		if strings.HasPrefix(a, "--type=") {
+			listType = strings.TrimPrefix(a, "--type=")
+		}
+	}
+	switch listType {
+	case "promotions":
+		return execListPromotions(s)
+	default:
+		return execListTables(s)
+	}
+}
+
+func execListTables(s *Session) error {
+	if len(s.Registry) == 0 {
+		fmt.Println("(no tables in session)")
+		return nil
+	}
+	fmt.Printf("%-24s  %10s  %6s  %s\n", "Table", "Rows", "Cols", "Ops")
+	fmt.Println(strings.Repeat("─", 70))
+	for _, e := range s.Registry {
+		ops := strings.Join(e.Ops, " | ")
+		fmt.Printf("%-24s  %10d  %6d  %s\n", e.Name, e.RowCount, e.ColCount, ops)
+	}
+	return nil
+}
+
+func execListPromotions(s *Session) error {
 	if len(s.Promoted) == 0 {
-		fmt.Println("No promoted artifacts. Use 'dbt promote <table> [as <name>]' first.")
+		fmt.Println("No promoted artifacts. Use 'promote <table> [as <name>]' first.")
 		return nil
 	}
 	fmt.Printf("%-24s  %-10s  %-20s  %s\n", "Export Name", "Kind", "Source Table", "Promoted At")
@@ -109,11 +132,14 @@ func execDbtList(s *Session) error {
 	return nil
 }
 
-// --- dbt validate ---
+// --- validate ---
 
-func execDbtValidate(args []string, s *Session) error {
-	if len(args) == 0 {
-		// Validate all promoted artifacts.
+func execValidate(args []string, s *Session) error {
+	format, _, rest := parseExportArgs(args)
+	if format != "" && format != "dbt" {
+		return fmt.Errorf("validate: unsupported target %q (supported: dbt)", format)
+	}
+	if len(rest) == 0 {
 		if len(s.Promoted) == 0 {
 			fmt.Println("No promoted artifacts to validate.")
 			return nil
@@ -125,13 +151,13 @@ func execDbtValidate(args []string, s *Session) error {
 		}
 		return nil
 	}
-	return validateArtifact(args[0], s)
+	return validateArtifact(rest[0], s)
 }
 
 func validateArtifact(exportName string, s *Session) error {
 	art, ok := s.Promoted[exportName]
 	if !ok {
-		return fmt.Errorf("dbt validate: %q not found in promoted artifacts", exportName)
+		return fmt.Errorf("validate: %q not found in promoted artifacts", exportName)
 	}
 
 	fmt.Printf("Validating %s (from %s)...\n", exportName, art.PromotedFrom)
@@ -185,24 +211,30 @@ func validateArtifact(exportName string, s *Session) error {
 	return nil
 }
 
-// --- dbt export ---
+// --- export ---
 
-func execDbtExport(args []string, s *Session) error {
+func execExport(args []string, s *Session) error {
 	if len(s.Promoted) == 0 {
-		fmt.Println("No promoted artifacts. Use 'dbt promote <table> [as <name>]' first.")
+		fmt.Println("No promoted artifacts. Use 'promote <table> [as <name>]' first.")
 		return nil
 	}
 
-	// Parse: [<name>] [--target DIR]
-	var exportName string
-	target := "zea-dbt-export"
+	format, outDir, rest := parseExportArgs(args)
+	if format == "" {
+		return fmt.Errorf("export: --target=<format> required  (e.g. --target=dbt -o ./my-project)")
+	}
+	if format != "dbt" {
+		return fmt.Errorf("export: unsupported target %q (supported: dbt)", format)
+	}
+	if outDir == "" {
+		outDir = "zea-dbt-export"
+	}
 
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--target" && i+1 < len(args) {
-			target = args[i+1]
-			i++
-		} else if exportName == "" && !strings.HasPrefix(args[i], "--") {
-			exportName = args[i]
+	var exportName string
+	for _, a := range rest {
+		if !strings.HasPrefix(a, "--") {
+			exportName = a
+			break
 		}
 	}
 
@@ -210,7 +242,7 @@ func execDbtExport(args []string, s *Session) error {
 	if exportName != "" {
 		art, ok := s.Promoted[exportName]
 		if !ok {
-			return fmt.Errorf("dbt export: %q not found in promoted artifacts", exportName)
+			return fmt.Errorf("export: %q not found in promoted artifacts", exportName)
 		}
 		artifacts = []*PromotedArtifact{art}
 	} else {
@@ -221,13 +253,13 @@ func execDbtExport(args []string, s *Session) error {
 
 	// Create directory structure.
 	for _, dir := range []string{
-		target,
-		filepath.Join(target, "models"),
-		filepath.Join(target, "sources"),
-		filepath.Join(target, "seeds"),
+		outDir,
+		filepath.Join(outDir, "models"),
+		filepath.Join(outDir, "sources"),
+		filepath.Join(outDir, "seeds"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("dbt export: %w", err)
+			return fmt.Errorf("export: %w", err)
 		}
 	}
 
@@ -262,17 +294,17 @@ func execDbtExport(args []string, s *Session) error {
 		portable := len(warnings) == 0 && len(chain.Issues) == 0
 
 		// models/NAME.sql
-		sqlPath := filepath.Join(target, "models", art.ExportName+".sql")
+		sqlPath := filepath.Join(outDir, "models", art.ExportName+".sql")
 		if err := os.WriteFile(sqlPath, []byte(sql+"\n"), 0o644); err != nil {
-			return fmt.Errorf("dbt export: %w", err)
+			return fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sqlPath)
 
 		// models/NAME.yml
-		ymlPath := filepath.Join(target, "models", art.ExportName+".yml")
+		ymlPath := filepath.Join(outDir, "models", art.ExportName+".yml")
 		ymlContent := buildModelYAML(art, entry, warnings)
 		if err := os.WriteFile(ymlPath, []byte(ymlContent), 0o644); err != nil {
-			return fmt.Errorf("dbt export: %w", err)
+			return fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", ymlPath)
 
@@ -304,25 +336,25 @@ func execDbtExport(args []string, s *Session) error {
 
 	// sources/zea_sources.yml
 	if len(allSources) > 0 {
-		sourcesPath := filepath.Join(target, "sources", "zea_sources.yml")
+		sourcesPath := filepath.Join(outDir, "sources", "zea_sources.yml")
 		sourcesContent := buildSourcesYAML(allSources)
 		if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
-			return fmt.Errorf("dbt export: %w", err)
+			return fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sourcesPath)
 	}
 
 	// dbt_project.yml
-	projectPath := filepath.Join(target, "dbt_project.yml")
+	projectPath := filepath.Join(outDir, "dbt_project.yml")
 	if err := os.WriteFile(projectPath, []byte(dbtProjectYML()), 0o644); err != nil {
-		return fmt.Errorf("dbt export: %w", err)
+		return fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", projectPath)
 
 	// profiles.yml
-	profilesPath := filepath.Join(target, "profiles.yml")
+	profilesPath := filepath.Join(outDir, "profiles.yml")
 	if err := os.WriteFile(profilesPath, []byte(dbtProfilesYML()), 0o644); err != nil {
-		return fmt.Errorf("dbt export: %w", err)
+		return fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", profilesPath)
 
@@ -335,15 +367,15 @@ func execDbtExport(args []string, s *Session) error {
 		"artifacts":  manifestArtifacts,
 	}
 	manifestData, _ := json.MarshalIndent(manifest, "", "  ")
-	manifestPath := filepath.Join(target, "zea_export.json")
+	manifestPath := filepath.Join(outDir, "zea_export.json")
 	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
-		return fmt.Errorf("dbt export: %w", err)
+		return fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", manifestPath)
 
-	fmt.Printf("\nExported %d artifact(s) to %s/\n", len(manifestArtifacts), target)
+	fmt.Printf("\nExported %d artifact(s) to %s/\n", len(manifestArtifacts), outDir)
 	fmt.Println("Next steps:")
-	fmt.Printf("  cd %s\n", target)
+	fmt.Printf("  cd %s\n", outDir)
 	fmt.Println("  pip install dbt-duckdb   # if not already installed")
 	fmt.Println("  dbt debug --profiles-dir .")
 	fmt.Println("  dbt run")
@@ -846,26 +878,24 @@ func sanitizeDbtName(s string) string {
 
 func execDbtHelp() error {
 	fmt.Print(`
-dbt — ZeaOS dbt export commands
+Promotion & Export Commands
 
-  dbt promote <table> [as <name>] [model|semantic]
-                                mark table for dbt export
-  dbt list                      list promoted artifacts
-  dbt validate [<name>]         check portability without writing files
-  dbt export [<name>] [--target DIR]
-                                write dbt Core project files
-                                (default target: ./zea-dbt-export)
-
-  Any other 'dbt' subcommand (run, test, debug, deps...) is passed
-  through to the dbt CLI if installed.
+  promote <table> [as <name>] [model|semantic]
+                              mark table for export (target-agnostic)
+  list                        list session tables
+  list --type=promotions       list promoted artifacts
+  validate [<name>] --target=dbt
+                              check portability without writing files
+  export [<name>] --target=dbt [-o DIR | --output=DIR]
+                              write export bundle (default: ./zea-dbt-export)
 
 Workflow:
   ZeaOS> trips = load https://...parquet
-  ZeaOS> cc   = trips | where payment_type = 1
-  ZeaOS> rev  = zeaql "SELECT PULocationID, SUM(fare_amount) AS revenue FROM cc GROUP BY 1"
-  ZeaOS> dbt promote rev as credit_card_revenue model
-  ZeaOS> dbt validate credit_card_revenue
-  ZeaOS> dbt export --target ./my-dbt-project
+  ZeaOS> cc    = trips | where payment_type = 1
+  ZeaOS> rev   = zeaql "SELECT PULocationID, SUM(fare_amount) AS revenue FROM cc GROUP BY 1"
+  ZeaOS> promote rev as credit_card_revenue model
+  ZeaOS> validate credit_card_revenue --target=dbt
+  ZeaOS> export credit_card_revenue --target=dbt -o ./my-dbt-project
 
 `)
 	return nil
