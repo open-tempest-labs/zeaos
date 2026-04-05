@@ -55,10 +55,11 @@ func execAssignment(cmd *Cmd, s *Session) error {
 
 func execLoad(cmd *Cmd, s *Session) error {
 	file := cmd.File
+	sourceURI := file // capture raw URI before any expansion
 
 	// HTTP/HTTPS: download to a temp file, then load via DuckDB as normal.
 	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
-		return execLoadURL(cmd, s, file)
+		return execLoadURL(cmd, s, file, sourceURI)
 	}
 
 	file = s.Drive.ExpandPath(file)
@@ -68,12 +69,12 @@ func execLoad(cmd *Cmd, s *Session) error {
 			return err
 		}
 	}
-	return execLoadFile(cmd, s, file, filepath.Base(file))
+	return execLoadFile(cmd, s, file, filepath.Base(file), sourceURI)
 }
 
 // execLoadURL downloads a remote file to a temp path and loads it via DuckDB.
 // A 10-minute timeout accommodates large public datasets (e.g. NYC Taxi Parquet ~100 MB).
-func execLoadURL(cmd *Cmd, s *Session, url string) error {
+func execLoadURL(cmd *Cmd, s *Session, url, sourceURI string) error {
 	fmt.Printf("downloading %s ...\n", url)
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
@@ -87,7 +88,7 @@ func execLoadURL(cmd *Cmd, s *Session, url string) error {
 
 	ext := strings.ToLower(filepath.Ext(url))
 	if ext == "" {
-		ext = ".parquet" // sensible default for extension-less URLs
+		ext = ".parquet"
 	}
 	tmp, err := os.CreateTemp("", "zeaos-load-*"+ext)
 	if err != nil {
@@ -102,12 +103,11 @@ func execLoadURL(cmd *Cmd, s *Session, url string) error {
 	}
 	tmp.Close()
 
-	// Use the URL's base name as the display label in lineage.
 	label := filepath.Base(strings.TrimRight(url, "/"))
-	return execLoadFile(cmd, s, tmpPath, label)
+	return execLoadFile(cmd, s, tmpPath, label, sourceURI)
 }
 
-func execLoadFile(cmd *Cmd, s *Session, file, label string) error {
+func execLoadFile(cmd *Cmd, s *Session, file, label, sourceURI string) error {
 	ext := strings.ToLower(filepath.Ext(file))
 	var readExpr string
 	switch ext {
@@ -127,6 +127,7 @@ func execLoadFile(cmd *Cmd, s *Session, file, label string) error {
 	if err != nil {
 		return fmt.Errorf("load %s: %w", label, err)
 	}
+	entry.SourceURI = sourceURI
 	fmt.Printf("→ %s: %d rows × %d cols\n", cmd.Target, entry.RowCount, entry.ColCount)
 	return nil
 }
@@ -154,6 +155,7 @@ func execSQL(cmd *Cmd, s *Session) error {
 	if err != nil {
 		return fmt.Errorf("sql: %w", err)
 	}
+	entry.SourceSQL = cmd.RawSQL
 	fmt.Printf("→ %s: %d rows × %d cols\n", cmd.Target, entry.RowCount, entry.ColCount)
 	return nil
 }
@@ -284,6 +286,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPluginManage(cmd.Args)
 	case "zeadrive":
 		return execZeadrive(cmd.Args, s)
+	case "dbt":
+		return execDbt(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":
@@ -524,6 +528,14 @@ DRIVE
     zeadrive status                    show local path, mount status, backends
 
     t = load zea://s3-data/file.parquet  cloud file via mounted backend
+
+DBT EXPORT
+  dbt promote <table> [as <name>] [model|semantic]
+                                     mark table for dbt export
+  dbt list                           list promoted artifacts
+  dbt validate [<name>]              check portability without writing files
+  dbt export [<name>] [--target DIR] write dbt Core project files
+  dbt <subcommand>                   any other subcommand passed to dbt CLI
 
 PLUGINS
   zearun <name> [args]               run plugin, stream output to terminal

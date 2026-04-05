@@ -30,6 +30,10 @@ type TableEntry struct {
 	Ops       []string  `json:"ops,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 
+	// Source tracking for dbt export.
+	SourceSQL string `json:"source_sql,omitempty"` // verbatim zeaql query, if applicable
+	SourceURI string `json:"source_uri,omitempty"` // original load URI before path expansion
+
 	// Runtime-only Arrow state — not serialised.
 	records []arrow.Record
 	schema  *arrow.Schema
@@ -40,6 +44,7 @@ type Session struct {
 	Dir       string
 	TablesDir string
 	Registry  map[string]*TableEntry
+	Promoted  map[string]*PromotedArtifact // keyed by export name
 	Drive     *DriveManager
 
 	db        *sql.DB
@@ -96,6 +101,7 @@ func NewSession() (*Session, error) {
 		Dir:       dir,
 		TablesDir: tablesDir,
 		Registry:  make(map[string]*TableEntry),
+		Promoted:  make(map[string]*PromotedArtifact),
 		db:        db,
 		arrowConn: arrowConn,
 		arrow:     ar,
@@ -471,8 +477,19 @@ func (s *Session) spillAll(ctx context.Context) error {
 	return nil
 }
 
+// sessionData is the persisted envelope for session.json.
+type sessionData struct {
+	Version  string                       `json:"version"`
+	Registry map[string]*TableEntry       `json:"registry"`
+	Promoted map[string]*PromotedArtifact `json:"promoted,omitempty"`
+}
+
 func (s *Session) saveRegistry() error {
-	data, err := json.MarshalIndent(s.Registry, "", "  ")
+	data, err := json.MarshalIndent(sessionData{
+		Version:  "0.2.0",
+		Registry: s.Registry,
+		Promoted: s.Promoted,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -485,9 +502,16 @@ func (s *Session) loadRegistry() error {
 	if err != nil {
 		return err
 	}
-	var reg map[string]*TableEntry
-	if err := json.Unmarshal(data, &reg); err != nil {
+	var sd sessionData
+	if err := json.Unmarshal(data, &sd); err != nil {
 		return err
+	}
+	reg := sd.Registry
+	if reg == nil {
+		return fmt.Errorf("session.json: missing registry")
+	}
+	if sd.Promoted != nil {
+		s.Promoted = sd.Promoted
 	}
 
 	for name, e := range reg {
