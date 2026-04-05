@@ -294,6 +294,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execValidate(cmd.Args, s)
 	case "export":
 		return execExport(cmd.Args, s)
+	case "publish":
+		return execPublish(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":

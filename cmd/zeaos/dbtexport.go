@@ -251,7 +251,24 @@ func execExport(args []string, s *Session) error {
 		}
 	}
 
-	// Create directory structure.
+	count, err := generateDbtBundle(artifacts, outDir, s)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nExported %d artifact(s) to %s/\n", count, outDir)
+	fmt.Println("Next steps:")
+	fmt.Printf("  cd %s\n", outDir)
+	fmt.Println("  pip install dbt-duckdb   # if not already installed")
+	fmt.Println("  dbt debug --profiles-dir .")
+	fmt.Println("  dbt run")
+	return nil
+}
+
+// generateDbtBundle writes a complete dbt Core bundle for the given artifacts
+// into outDir, creating all subdirectories. It is called by both execExport
+// (local file export) and publish (writes to a temp dir before git commit).
+// Returns the count of successfully written artifacts.
+func generateDbtBundle(artifacts []*PromotedArtifact, outDir string, s *Session) (int, error) {
 	for _, dir := range []string{
 		outDir,
 		filepath.Join(outDir, "models"),
@@ -259,23 +276,23 @@ func execExport(args []string, s *Session) error {
 		filepath.Join(outDir, "seeds"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("export: %w", err)
+			return 0, fmt.Errorf("export: %w", err)
 		}
 	}
 
 	type manifestArtifact struct {
-		Name            string            `json:"name"`
-		Kind            string            `json:"kind"`
-		SourceURIs      []string          `json:"source_uris"`
-		Transformations []map[string]any  `json:"transformations"`
-		Columns         int               `json:"columns"`
-		RowCount        int64             `json:"row_count"`
-		Dialect         string            `json:"dialect"`
-		Portable        bool              `json:"portable"`
+		Name            string           `json:"name"`
+		Kind            string           `json:"kind"`
+		SourceURIs      []string         `json:"source_uris"`
+		Transformations []map[string]any `json:"transformations"`
+		Columns         int              `json:"columns"`
+		RowCount        int64            `json:"row_count"`
+		Dialect         string           `json:"dialect"`
+		Portable        bool             `json:"portable"`
 	}
 
 	var manifestArtifacts []manifestArtifact
-	var allSources []sourceEntry // collected across all artifacts
+	var allSources []sourceEntry
 
 	for _, art := range artifacts {
 		chain, err := walkLineage(s, art.PromotedFrom)
@@ -283,7 +300,6 @@ func execExport(args []string, s *Session) error {
 			fmt.Printf("⚠  skipping %s: %v\n", art.ExportName, err)
 			continue
 		}
-
 		sql, warnings, err := reconstructSQL(chain, s)
 		if err != nil {
 			fmt.Printf("⚠  skipping %s: SQL reconstruction failed: %v\n", art.ExportName, err)
@@ -293,40 +309,34 @@ func execExport(args []string, s *Session) error {
 		entry, _ := s.Get(art.PromotedFrom)
 		portable := len(warnings) == 0 && len(chain.Issues) == 0
 
-		// models/NAME.sql
 		sqlPath := filepath.Join(outDir, "models", art.ExportName+".sql")
 		if err := os.WriteFile(sqlPath, []byte(sql+"\n"), 0o644); err != nil {
-			return fmt.Errorf("export: %w", err)
+			return 0, fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sqlPath)
 
-		// models/NAME.yml
 		ymlPath := filepath.Join(outDir, "models", art.ExportName+".yml")
-		ymlContent := buildModelYAML(art, entry, warnings)
-		if err := os.WriteFile(ymlPath, []byte(ymlContent), 0o644); err != nil {
-			return fmt.Errorf("export: %w", err)
+		if err := os.WriteFile(ymlPath, []byte(buildModelYAML(art, entry, warnings)), 0o644); err != nil {
+			return 0, fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", ymlPath)
 
-		// Collect sources for this artifact.
 		for _, uri := range chain.SourceURIs {
 			sn, tbl, desc := mapURIToSource(uri)
 			allSources = append(allSources, sourceEntry{SourceName: sn, TableName: tbl, Description: desc, URI: uri})
 		}
 
-		// Build manifest entry.
 		var rowCount int64
 		var colCount int
 		if entry != nil {
 			rowCount = entry.RowCount
 			colCount = entry.ColCount
 		}
-		transformations := buildTransformations(chain)
 		manifestArtifacts = append(manifestArtifacts, manifestArtifact{
 			Name:            art.ExportName,
 			Kind:            art.Kind,
 			SourceURIs:      chain.SourceURIs,
-			Transformations: transformations,
+			Transformations: buildTransformations(chain),
 			Columns:         colCount,
 			RowCount:        rowCount,
 			Dialect:         "duckdb",
@@ -334,31 +344,26 @@ func execExport(args []string, s *Session) error {
 		})
 	}
 
-	// sources/zea_sources.yml
 	if len(allSources) > 0 {
 		sourcesPath := filepath.Join(outDir, "sources", "zea_sources.yml")
-		sourcesContent := buildSourcesYAML(allSources)
-		if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
-			return fmt.Errorf("export: %w", err)
+		if err := os.WriteFile(sourcesPath, []byte(buildSourcesYAML(allSources)), 0o644); err != nil {
+			return 0, fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sourcesPath)
 	}
 
-	// dbt_project.yml
 	projectPath := filepath.Join(outDir, "dbt_project.yml")
 	if err := os.WriteFile(projectPath, []byte(dbtProjectYML()), 0o644); err != nil {
-		return fmt.Errorf("export: %w", err)
+		return 0, fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", projectPath)
 
-	// profiles.yml
 	profilesPath := filepath.Join(outDir, "profiles.yml")
 	if err := os.WriteFile(profilesPath, []byte(dbtProfilesYML()), 0o644); err != nil {
-		return fmt.Errorf("export: %w", err)
+		return 0, fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", profilesPath)
 
-	// zea_export.json
 	manifest := map[string]any{
 		"version":    "0.2.0",
 		"session_id": fmt.Sprintf("zea-%s", time.Now().Format("2006-01-02-1504")),
@@ -369,17 +374,11 @@ func execExport(args []string, s *Session) error {
 	manifestData, _ := json.MarshalIndent(manifest, "", "  ")
 	manifestPath := filepath.Join(outDir, "zea_export.json")
 	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
-		return fmt.Errorf("export: %w", err)
+		return 0, fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", manifestPath)
 
-	fmt.Printf("\nExported %d artifact(s) to %s/\n", len(manifestArtifacts), outDir)
-	fmt.Println("Next steps:")
-	fmt.Printf("  cd %s\n", outDir)
-	fmt.Println("  pip install dbt-duckdb   # if not already installed")
-	fmt.Println("  dbt debug --profiles-dir .")
-	fmt.Println("  dbt run")
-	return nil
+	return len(manifestArtifacts), nil
 }
 
 // --- Lineage walker ---
@@ -796,6 +795,7 @@ func buildSourcesYAML(sources []sourceEntry) string {
 	}
 
 	var b strings.Builder
+	b.WriteString("# generated by ZeaOS — safe to overwrite\n")
 	b.WriteString("version: 2\n\nsources:\n")
 	for _, sn := range order {
 		b.WriteString(fmt.Sprintf("  - name: %s\n", sn))
