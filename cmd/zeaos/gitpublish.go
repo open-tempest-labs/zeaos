@@ -393,6 +393,9 @@ func execPublish(args []string, s *Session) error {
 		}
 	}
 
+	// Warn about non-portable source URIs before doing any network work.
+	warnSourcePortability(artifacts, s)
+
 	token, err := resolveToken(pa.TokenName)
 	if err != nil {
 		return err
@@ -882,28 +885,29 @@ func buildPRBody(artifacts []*PromotedArtifact) string {
 func newRepoReadme(repoName string) string {
 	return "# " + repoName + "\n\n" +
 		"dbt project exported from [ZeaOS](https://github.com/open-tempest-labs/zeaos).\n\n" +
-		"## Import into dbt Cloud\n\n" +
-		"1. In [dbt Cloud](https://cloud.getdbt.com), create a new project and connect this repository.\n" +
-		"2. Configure your warehouse connection in the dbt Cloud UI (BigQuery, Snowflake, Redshift, Databricks, or DuckDB).\n" +
-		"3. Set the project subdirectory to `/` and the models path to `models/`.\n" +
-		"4. Open the dbt Cloud IDE and run `dbt run` then `dbt test`.\n\n" +
-		"> **Note on sources:** Models use `{{ source() }}` references generated from a ZeaOS session.\n" +
-		"> If your adapter is not DuckDB, replace the `{{ source('zea_http', ...) }}` references\n" +
-		"> with tables already loaded in your warehouse, or use an ingestion tool (Fivetran, Airbyte)\n" +
-		"> to land the source data first.\n\n" +
-		"## Local development with DuckDB\n\n" +
-		"To validate locally before importing to a cloud warehouse:\n\n" +
+		"## Quickstart — local dbt + DuckDB\n\n" +
+		"The fastest way to run this project requires only Python:\n\n" +
 		"```bash\n" +
 		"pip install dbt-duckdb\n" +
-		"dbt debug --profiles-dir .\n" +
 		"dbt run\n" +
 		"dbt test\n" +
 		"```\n\n" +
-		"The included `profiles.yml` targets a local DuckDB file and is for local validation only — " +
-		"dbt Cloud manages its own connections.\n\n" +
+		"DuckDB reads source Parquet files directly over HTTPS — no warehouse, no data loading, " +
+		"no extra configuration required. Results are materialised into `local.duckdb`.\n\n" +
+		"> **Portability note:** This works out of the box when source data comes from public HTTPS " +
+		"or S3 URLs. If sources were loaded from local files the models will only run on the " +
+		"machine where the session was created. See `zea_export.json` for source URI details.\n\n" +
+		"## Import into dbt Cloud\n\n" +
+		"1. In [dbt Cloud](https://cloud.getdbt.com), create a new project and connect this repository.\n" +
+		"2. Configure your warehouse connection in the dbt Cloud UI.\n" +
+		"3. For non-DuckDB warehouses, source data must be loaded into your warehouse first — " +
+		"the `{{ source() }}` references in `sources/zea_sources.yml` and model SQL will need " +
+		"to point at warehouse tables rather than HTTPS URLs.\n" +
+		"4. For DuckDB in dbt Cloud, models run as-is against public HTTPS sources.\n\n" +
 		"## Lineage\n\n" +
 		"See `zea_export.json` for the full lineage of each model — every load, filter, and " +
-		"SQL transformation recorded by ZeaOS at export time.\n"
+		"SQL transformation recorded by ZeaOS at export time, including source URIs, row counts, " +
+		"and portability status.\n"
 }
 
 func dbtGitignore() string {
@@ -913,6 +917,49 @@ func dbtGitignore() string {
 // ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
+
+// isPortableURI returns true if the URI is reachable by anyone with the repo —
+// i.e. a public HTTPS URL or an S3/GCS/Azure cloud storage URL.
+func isPortableURI(uri string) bool {
+	return strings.HasPrefix(uri, "https://") ||
+		strings.HasPrefix(uri, "http://") ||
+		strings.HasPrefix(uri, "s3://") ||
+		strings.HasPrefix(uri, "gs://") ||
+		strings.HasPrefix(uri, "abfs://") ||
+		strings.HasPrefix(uri, "az://")
+}
+
+// warnSourcePortability checks all source URIs across the artifacts being
+// published and prints a warning for any that are local paths. Local sources
+// mean the published repo's dbt models will only run on this machine.
+func warnSourcePortability(artifacts []*PromotedArtifact, s *Session) {
+	var localSources []string
+	seen := map[string]bool{}
+	for _, art := range artifacts {
+		chain, err := walkLineage(s, art.PromotedFrom)
+		if err != nil {
+			continue
+		}
+		for _, uri := range chain.SourceURIs {
+			if !isPortableURI(uri) && !seen[uri] {
+				seen[uri] = true
+				localSources = append(localSources, uri)
+			}
+		}
+	}
+	if len(localSources) == 0 {
+		return
+	}
+	fmt.Println("⚠  Non-portable sources detected:")
+	for _, uri := range localSources {
+		fmt.Printf("     %s\n", uri)
+	}
+	fmt.Println("   The published dbt repo will only run on this machine.")
+	fmt.Println("   To make it portable: save source tables to a ZeaDrive S3 backend")
+	fmt.Println("   and re-publish so the source URIs point to S3.")
+	fmt.Println("   Example: save trips zea://s3-data/taxi/trips.parquet")
+	fmt.Println()
+}
 
 func execPublishSetRepo(args []string) error {
 	if len(args) == 0 {
