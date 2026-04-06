@@ -174,12 +174,20 @@ func validateArtifact(exportName string, s *Session) error {
 	}
 
 	// Parse-check the reconstructed SQL via DuckDB EXPLAIN.
-	// Strip dbt Jinja templating for the parse check.
+	// Strip dbt Jinja templating before the check. If DuckDB reports a
+	// Catalog Error (table not found), that is expected — Jinja source/ref
+	// names resolve at dbt runtime, not in the local session. Only a parser
+	// error (bad SQL syntax) is a real failure here.
 	checkSQL := stripJinja(sql)
 	ctx := context.Background()
 	_, execErr := s.arrowConn.ExecContext(ctx, "EXPLAIN "+checkSQL)
 	if execErr != nil {
-		fmt.Printf("  ✗ SQL does not parse: %v\n", execErr)
+		msg := execErr.Error()
+		if strings.Contains(msg, "Catalog Error") || strings.Contains(msg, "Table with name") {
+			fmt.Printf("  ✓ SQL structure valid (source refs resolve at dbt runtime)\n")
+		} else {
+			fmt.Printf("  ✗ SQL does not parse: %v\n", execErr)
+		}
 	} else {
 		fmt.Printf("  ✓ SQL parses correctly\n")
 	}

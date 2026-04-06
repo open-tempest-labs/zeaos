@@ -29,5 +29,5 @@ promote avg_tip as avg_tip_by_payment model
 validate zone_revenue_by_pickup --target=dbt
 validate avg_tip_by_payment --target=dbt
 
-# --- publish ($ARGS receives the flags passed to zearun) ---
+# --- publish ($ARGS receives the flags passed to zearun, e.g. --repo lmccay/nyc-taxi-dbt --new) ---
 publish $ARGS
