@@ -527,6 +527,8 @@ func publishNewRepo(pa publishArgs, bundleDir string, artifacts []*PromotedArtif
 	fmt.Printf("  created: https://github.com/%s\n", pa.Repo)
 
 	localPath := repoCachePath(pa.Repo)
+	// Remove any leftover directory from a previous failed attempt.
+	_ = os.RemoveAll(localPath)
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
 		return err
 	}
@@ -536,6 +538,15 @@ func publishNewRepo(pa publishArgs, bundleDir string, artifacts []*PromotedArtif
 	if err != nil {
 		return fmt.Errorf("git init: %w", err)
 	}
+
+	// Point HEAD at the target branch before the first commit so the branch
+	// name is correct (PlainInit defaults to "master").
+	if err := r.Storer.SetReference(
+		plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(pa.Branch)),
+	); err != nil {
+		return fmt.Errorf("git set HEAD: %w", err)
+	}
+
 	if _, err := r.CreateRemote(&gitcfg.RemoteConfig{
 		Name: "origin",
 		URLs: []string{cloneURL},
@@ -550,8 +561,8 @@ func publishNewRepo(pa publishArgs, bundleDir string, artifacts []*PromotedArtif
 
 	// Write --new only extras.
 	extras := map[string]string{
-		"README.md":   newRepoReadme(repoName),
-		".gitignore":  dbtGitignore(),
+		"README.md":  newRepoReadme(repoName),
+		".gitignore": dbtGitignore(),
 	}
 	for name, content := range extras {
 		if err := os.WriteFile(filepath.Join(localPath, name), []byte(content), 0o644); err != nil {
@@ -573,12 +584,13 @@ func publishNewRepo(pa publishArgs, bundleDir string, artifacts []*PromotedArtif
 	// Push to main branch (new repo).
 	refSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", pa.Branch, pa.Branch)
 	auth := &gogithttp.BasicAuth{Username: "x-token", Password: token}
-	if err := r.Push(&gogit.PushOptions{
+	pushErr := r.Push(&gogit.PushOptions{
 		RemoteName: "origin",
 		RefSpecs:   []gitcfg.RefSpec{gitcfg.RefSpec(refSpec)},
 		Auth:       auth,
-	}); err != nil {
-		return fmt.Errorf("git push: %w", err)
+	})
+	if pushErr != nil && pushErr != gogit.NoErrAlreadyUpToDate {
+		return fmt.Errorf("git push: %w", pushErr)
 	}
 
 	fmt.Printf("✓ Published to https://github.com/%s (%s)\n", pa.Repo, hash.String()[:8])
