@@ -263,7 +263,18 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return nil
 	case "drop":
 		if len(cmd.Args) == 0 {
-			return fmt.Errorf("drop: table name required")
+			return fmt.Errorf("drop: table name required (or use 'drop *' / 'drop --all' to clear session)")
+		}
+		if cmd.Args[0] == "*" || cmd.Args[0] == "--all" {
+			names := make([]string, 0, len(s.Registry))
+			for n := range s.Registry {
+				names = append(names, n)
+			}
+			for _, n := range names {
+				s.Drop(n)
+			}
+			fmt.Printf("dropped %d table(s)\n", len(names))
+			return nil
 		}
 		if err := s.Drop(cmd.Args[0]); err != nil {
 			return err
