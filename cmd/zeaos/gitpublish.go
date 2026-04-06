@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -90,7 +91,29 @@ func resolveToken(name string) (string, error) {
 			return tok, nil
 		}
 	}
+	// Fall back to gh CLI token.
+	if tok, err := ghCLIToken(); err == nil {
+		return tok, nil
+	}
+	// Fall back to GITHUB_TOKEN env var.
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		return tok, nil
+	}
 	return "", fmt.Errorf("no GitHub token found — add one with: publish token add <name> --pat <token>")
+}
+
+// ghCLIToken runs `gh auth token` and returns the token, or an error if gh
+// is not installed or not authenticated.
+func ghCLIToken() (string, error) {
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return "", err
+	}
+	tok := strings.TrimSpace(string(out))
+	if tok == "" {
+		return "", fmt.Errorf("gh auth token returned empty")
+	}
+	return tok, nil
 }
 
 // ---------------------------------------------------------------------------
