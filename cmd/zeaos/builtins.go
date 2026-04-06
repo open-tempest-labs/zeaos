@@ -491,6 +491,50 @@ func pluginEnv(s *Session) []string {
 	return env
 }
 
+// extractZeaHelp returns the leading comment block from a .zea script,
+// stripping the "# " prefix from each line. Stops at the first non-comment,
+// non-blank line (i.e. the first actual command).
+func extractZeaHelp(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var out strings.Builder
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if i == 0 && strings.HasPrefix(line, "#!") {
+			continue // skip shebang
+		}
+		if strings.HasPrefix(line, "#") {
+			out.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "#"), " "))
+			out.WriteByte('\n')
+			continue
+		}
+		if line == "" {
+			continue
+		}
+		break // first real command — stop
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// showPluginHelp prints help for a plugin: extracts the comment header from
+// .zea scripts, or runs the script with --help for executable scripts.
+func showPluginHelp(scriptPath, name string) error {
+	if isZeaScript(scriptPath) {
+		help := extractZeaHelp(scriptPath)
+		if help == "" {
+			fmt.Printf("%s: no help text found (add # comments at the top of the script)\n", name)
+		} else {
+			fmt.Println(help)
+		}
+		return nil
+	}
+	c := exec.Command(scriptPath, "--help")
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	return c.Run()
+}
+
 // execPluginRun streams a plugin's output directly to the terminal.
 // Syntax: zearun NAME [ARGS...]
 func execPluginRun(args []string, s *Session) error {
@@ -500,6 +544,10 @@ func execPluginRun(args []string, s *Session) error {
 	scriptPath, err := resolvePlugin(args[0])
 	if err != nil {
 		return err
+	}
+	// zearun NAME --help
+	if len(args) == 2 && args[1] == "--help" {
+		return showPluginHelp(scriptPath, args[0])
 	}
 	if isZeaScript(scriptPath) {
 		return execZeaScript(scriptPath, args[1:], s)
@@ -562,14 +610,11 @@ func execPluginManage(args []string) error {
 	if len(args) == 0 || args[0] == "list" {
 		return execPluginList()
 	}
-	// zeaplugin <name> --help
 	scriptPath, err := resolvePlugin(args[0])
 	if err != nil {
 		return err
 	}
-	c := exec.Command(scriptPath, "--help")
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
-	return c.Run()
+	return showPluginHelp(scriptPath, args[0])
 }
 
 // execPluginList prints plugins from both ZeaOS-native and zeashell directories.
