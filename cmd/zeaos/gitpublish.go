@@ -880,7 +880,30 @@ func buildPRBody(artifacts []*PromotedArtifact) string {
 }
 
 func newRepoReadme(repoName string) string {
-	return fmt.Sprintf("# %s\n\ndbt project exported from [ZeaOS](https://github.com/open-tempest-labs/zeaos).\n\n## Setup\n\n```bash\npip install dbt-duckdb\ndbt deps\ndbt debug --profiles-dir .\ndbt run\n```\n", repoName)
+	return "# " + repoName + "\n\n" +
+		"dbt project exported from [ZeaOS](https://github.com/open-tempest-labs/zeaos).\n\n" +
+		"## Import into dbt Cloud\n\n" +
+		"1. In [dbt Cloud](https://cloud.getdbt.com), create a new project and connect this repository.\n" +
+		"2. Configure your warehouse connection in the dbt Cloud UI (BigQuery, Snowflake, Redshift, Databricks, or DuckDB).\n" +
+		"3. Set the project subdirectory to `/` and the models path to `models/`.\n" +
+		"4. Open the dbt Cloud IDE and run `dbt run` then `dbt test`.\n\n" +
+		"> **Note on sources:** Models use `{{ source() }}` references generated from a ZeaOS session.\n" +
+		"> If your adapter is not DuckDB, replace the `{{ source('zea_http', ...) }}` references\n" +
+		"> with tables already loaded in your warehouse, or use an ingestion tool (Fivetran, Airbyte)\n" +
+		"> to land the source data first.\n\n" +
+		"## Local development with DuckDB\n\n" +
+		"To validate locally before importing to a cloud warehouse:\n\n" +
+		"```bash\n" +
+		"pip install dbt-duckdb\n" +
+		"dbt debug --profiles-dir .\n" +
+		"dbt run\n" +
+		"dbt test\n" +
+		"```\n\n" +
+		"The included `profiles.yml` targets a local DuckDB file and is for local validation only — " +
+		"dbt Cloud manages its own connections.\n\n" +
+		"## Lineage\n\n" +
+		"See `zea_export.json` for the full lineage of each model — every load, filter, and " +
+		"SQL transformation recorded by ZeaOS at export time.\n"
 }
 
 func dbtGitignore() string {
