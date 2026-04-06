@@ -406,23 +406,76 @@ func execSave(name, dest string, s *Session) error {
 	return nil
 }
 
-// resolvePlugin finds a plugin script by name, searching:
-//  1. ~/.zeaos/plugins/<name>  (ZeaOS-native)
-//  2. ~/.zea/plugins/<name>    (zeashell-compatible, no zeashell binary required)
-//
-// Returns the resolved path or an error listing both search locations.
+// resolvePlugin finds a plugin by name, searching (in order):
+//  1. ~/.zeaos/plugins/<name>      (ZeaOS-native executable)
+//  2. ~/.zeaos/plugins/<name>.zea  (ZeaOS script)
+//  3. ~/.zea/plugins/<name>        (zeashell-compatible)
+//  4. ~/.zea/plugins/<name>.zea
 func resolvePlugin(name string) (string, error) {
 	home, _ := os.UserHomeDir()
 	candidates := []string{
 		filepath.Join(home, ".zeaos", "plugins", name),
+		filepath.Join(home, ".zeaos", "plugins", name+".zea"),
 		filepath.Join(home, ".zea", "plugins", name),
+		filepath.Join(home, ".zea", "plugins", name+".zea"),
 	}
 	for _, p := range candidates {
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("plugin %q not found — install it at ~/.zeaos/plugins/%s or ~/.zea/plugins/%s", name, name, name)
+	return "", fmt.Errorf("plugin %q not found — install it at ~/.zeaos/plugins/%s or ~/.zeaos/plugins/%s.zea", name, name, name)
+}
+
+// isZeaScript returns true if the file should be executed as a native ZeaOS
+// script (lines fed through execLine in the current session) rather than as an
+// external process. Criteria: .zea extension OR first line is "#!/usr/bin/env zeaos".
+func isZeaScript(path string) bool {
+	if strings.HasSuffix(path, ".zea") {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var line strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 && buf[0] != '\n' {
+			line.WriteByte(buf[0])
+		}
+		if err != nil || buf[0] == '\n' || line.Len() > 64 {
+			break
+		}
+	}
+	return strings.HasPrefix(line.String(), "#!/usr/bin/env zeaos")
+}
+
+// execZeaScript runs a .zea script file in the current session.
+// Each non-blank, non-comment line is passed to execLine.
+// The string $ARGS in any line is replaced with the space-joined plugin args,
+// allowing scripts to forward flags like --repo to publish.
+func execZeaScript(path string, args []string, s *Session) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("zearun: %w", err)
+	}
+	argsStr := strings.Join(args, " ")
+	lineNum := 0
+	for _, raw := range strings.Split(string(data), "\n") {
+		lineNum++
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.ReplaceAll(line, "$ARGS", argsStr)
+		if err := execLine(line, s); err != nil {
+			return fmt.Errorf("zearun %s line %d: %w", filepath.Base(path), lineNum, err)
+		}
+	}
+	return nil
 }
 
 // pluginEnv returns the environment for plugin execution: the current process
@@ -448,6 +501,9 @@ func execPluginRun(args []string, s *Session) error {
 	if err != nil {
 		return err
 	}
+	if isZeaScript(scriptPath) {
+		return execZeaScript(scriptPath, args[1:], s)
+	}
 	c := exec.Command(scriptPath, args[1:]...)
 	c.Env = pluginEnv(s)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -464,6 +520,9 @@ func execPluginCapture(cmd *Cmd, s *Session) error {
 	scriptPath, err := resolvePlugin(pluginName)
 	if err != nil {
 		return err
+	}
+	if isZeaScript(scriptPath) {
+		return fmt.Errorf("zearun %s: ZeaOS scripts run in the current session and don't produce tabular output — use 'zearun %s' without assignment", pluginName, pluginName)
 	}
 
 	var buf bytes.Buffer

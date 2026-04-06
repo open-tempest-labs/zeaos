@@ -40,6 +40,25 @@ For the taxi analysis the right set is:
 
 ---
 
+## Quick Path: One-Command Plugin
+
+The entire workflow is packaged as a ZeaOS script plugin. Install it once:
+
+```bash
+mkdir -p ~/.zeaos/plugins
+cp plugins/taxi-dbt-publish.zea ~/.zeaos/plugins/
+```
+
+Then from inside any ZeaOS session:
+
+```
+ZeaOS> zearun taxi-dbt-publish --repo lmccay/nyc-taxi-dbt --new
+```
+
+That single command loads the taxi data, builds the analysis tables, promotes and validates two dbt models, and publishes the bundle to GitHub. The rest of this tutorial walks through what the plugin does step by step.
+
+---
+
 ## Option A: Manual Promote → Validate → Publish
 
 ### Step 1 — Promote

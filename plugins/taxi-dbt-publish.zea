@@ -1,0 +1,33 @@
+#!/usr/bin/env zeaos
+# taxi-dbt-publish — load NYC Yellow Taxi Jan 2024, build revenue and tip
+# analyses, promote them as dbt models, and publish to GitHub.
+#
+# Usage:
+#   zearun taxi-dbt-publish --repo OWNER/REPO [--new] [--pr] [--branch BRANCH]
+#
+# Examples:
+#   zearun taxi-dbt-publish --repo lmccay/nyc-taxi-dbt --new
+#   zearun taxi-dbt-publish --repo acme-data/dbt-main --pr
+#
+# The script promotes zone_revenue_by_pickup and avg_tip_by_payment as dbt
+# models. Existing promotions with those names are overwritten. All other
+# session tables are left untouched.
+
+# --- load source data ---
+trips = load https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+
+# --- derive analysis tables ---
+long_trips = trips | where trip_distance > 2.0
+zone_revenue = zeaql "SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(fare_amount), 2) AS total_fare, ROUND(AVG(tip_amount), 2) AS avg_tip FROM long_trips GROUP BY PULocationID ORDER BY total_fare DESC"
+avg_tip = zeaql "SELECT payment_type, ROUND(AVG(tip_amount), 2) AS avg_tip, COUNT(*) AS trips FROM trips GROUP BY payment_type ORDER BY avg_tip DESC"
+
+# --- promote ---
+promote zone_revenue as zone_revenue_by_pickup model
+promote avg_tip as avg_tip_by_payment model
+
+# --- validate ---
+validate zone_revenue_by_pickup --target=dbt
+validate avg_tip_by_payment --target=dbt
+
+# --- publish ($ARGS receives the flags passed to zearun) ---
+publish $ARGS
