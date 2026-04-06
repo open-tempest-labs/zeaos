@@ -22,6 +22,49 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// ZeaOS config (~/.zeaos/config.json)
+// ---------------------------------------------------------------------------
+
+type zeaosConfig struct {
+	GitHub struct {
+		DefaultRepo   string `json:"default_repo,omitempty"`
+		DefaultBranch string `json:"default_branch,omitempty"`
+	} `json:"github,omitempty"`
+}
+
+func configPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".zeaos", "config.json")
+}
+
+func loadConfig() (*zeaosConfig, error) {
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &zeaosConfig{}, nil
+		}
+		return nil, err
+	}
+	var cfg zeaosConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func saveConfig(cfg *zeaosConfig) error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// ---------------------------------------------------------------------------
 // Token storage
 // ---------------------------------------------------------------------------
 
@@ -242,6 +285,7 @@ type publishArgs struct {
 	IsNew        bool
 	IsPR         bool
 	AutoPromote  bool // promote all unpromoted tables before publishing
+	repoExplicit bool // true when --repo was given on the command line
 }
 
 func parsePublishArgs(args []string) (publishArgs, error) {
@@ -251,8 +295,10 @@ func parsePublishArgs(args []string) (publishArgs, error) {
 		case args[i] == "--repo" && i+1 < len(args):
 			i++
 			pa.Repo = args[i]
+			pa.repoExplicit = true
 		case strings.HasPrefix(args[i], "--repo="):
 			pa.Repo = strings.TrimPrefix(args[i], "--repo=")
+			pa.repoExplicit = true
 		case args[i] == "--branch" && i+1 < len(args):
 			i++
 			pa.Branch = args[i]
@@ -273,8 +319,19 @@ func parsePublishArgs(args []string) (publishArgs, error) {
 			pa.ArtifactName = args[i]
 		}
 	}
+	// Fall back to configured default repo if --repo was not supplied.
 	if pa.Repo == "" {
-		return pa, fmt.Errorf("publish: --repo OWNER/REPO required")
+		cfg, err := loadConfig()
+		if err == nil && cfg.GitHub.DefaultRepo != "" {
+			pa.Repo = cfg.GitHub.DefaultRepo
+			if cfg.GitHub.DefaultBranch != "" {
+				pa.Branch = cfg.GitHub.DefaultBranch
+			}
+			fmt.Printf("using default repo: %s\n", pa.Repo)
+		}
+	}
+	if pa.Repo == "" {
+		return pa, fmt.Errorf("publish: --repo OWNER/REPO required (or set a default with: publish set-repo OWNER/REPO)")
 	}
 	return pa, nil
 }
@@ -287,6 +344,9 @@ func execPublish(args []string, s *Session) error {
 	if len(args) > 0 && args[0] == "token" {
 		return execPublishToken(args[1:])
 	}
+	if len(args) > 0 && args[0] == "set-repo" {
+		return execPublishSetRepo(args[1:])
+	}
 	if len(args) == 0 || args[0] == "help" {
 		return execPublishHelp()
 	}
@@ -294,6 +354,17 @@ func execPublish(args []string, s *Session) error {
 	pa, err := parsePublishArgs(args)
 	if err != nil {
 		return err
+	}
+
+	// Persist an explicitly supplied --repo as the new default.
+	if pa.repoExplicit {
+		if cfg, err := loadConfig(); err == nil {
+			cfg.GitHub.DefaultRepo = pa.Repo
+			if pa.Branch != "main" {
+				cfg.GitHub.DefaultBranch = pa.Branch
+			}
+			_ = saveConfig(cfg)
+		}
 	}
 
 	// Auto-promote all eligible session tables if requested.
@@ -808,6 +879,33 @@ func dbtGitignore() string {
 // Help
 // ---------------------------------------------------------------------------
 
+func execPublishSetRepo(args []string) error {
+	if len(args) == 0 {
+		// Show current default.
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		if cfg.GitHub.DefaultRepo == "" {
+			fmt.Println("no default repo set — use: publish set-repo OWNER/REPO")
+		} else {
+			fmt.Printf("default repo: %s\n", cfg.GitHub.DefaultRepo)
+		}
+		return nil
+	}
+	repo := args[0]
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.GitHub.DefaultRepo = repo
+	if err := saveConfig(cfg); err != nil {
+		return err
+	}
+	fmt.Printf("default repo set to %s (saved to %s)\n", repo, configPath())
+	return nil
+}
+
 func execPublishHelp() error {
 	fmt.Print(`
 publish — push promoted artifacts to GitHub as a dbt project
@@ -824,6 +922,13 @@ OPTIONS
   --token NAME         use named token from token store
   --auto-promote       promote all eligible session tables before publishing
 
+DEFAULT REPO
+  publish set-repo OWNER/REPO   set default repo (saved to ~/.zeaos/config.json)
+  publish set-repo              show current default
+
+  Once set, --repo can be omitted and the default is used automatically.
+  Passing --repo explicitly updates the default for next time.
+
 TOKEN MANAGEMENT
   publish token add <name> --pat <token>   store a GitHub PAT
   publish token list                        list stored tokens
@@ -833,10 +938,10 @@ TOKEN MANAGEMENT
   Use a fine-grained PAT with Contents: read/write scope.
 
 EXAMPLES
-  publish zone_revenue --repo team/my-dbt-project
-  publish zone_revenue --repo team/my-dbt-project --pr
-  publish --repo zea-analysis --new
-  publish --repo team/dbt-main
+  publish set-repo lmccay/nyc-taxi-dbt
+  publish zone_revenue --repo team/my-dbt-project --new
+  publish zone_revenue --pr
+  publish --auto-promote
 
 `)
 	return nil
