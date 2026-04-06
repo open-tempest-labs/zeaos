@@ -211,6 +211,66 @@ func validateArtifact(exportName string, s *Session) error {
 	return nil
 }
 
+// --- auto-promote ---
+
+// autoPromoteAll promotes every unpromoted session table that passes basic
+// portability checks. Tables already promoted (by any export name) are skipped.
+// Tables with names starting with "_" are treated as internal and skipped.
+// Non-portable tables (e.g. PIVOT output) are promoted with a warning rather
+// than being silently dropped — the reviewer can decide whether to include them.
+// Returns the slice of newly promoted artifacts.
+func autoPromoteAll(s *Session) []*PromotedArtifact {
+	// Build set of already-promoted source tables.
+	alreadyPromoted := map[string]bool{}
+	for _, a := range s.Promoted {
+		alreadyPromoted[a.PromotedFrom] = true
+	}
+
+	var added []*PromotedArtifact
+	for _, entry := range s.Registry {
+		name := entry.Name
+		if strings.HasPrefix(name, "_") {
+			continue // internal scratch table
+		}
+		if alreadyPromoted[name] {
+			continue
+		}
+		exportName := name
+		if !isValidDbtName(exportName) {
+			fmt.Printf("  ⚠  skipping %s: not a valid dbt model name\n", name)
+			continue
+		}
+
+		// Quick lineage check — if we can't reconstruct SQL, skip.
+		chain, err := walkLineage(s, name)
+		if err != nil {
+			fmt.Printf("  ⚠  skipping %s: lineage error: %v\n", name, err)
+			continue
+		}
+		_, warnings, err := reconstructSQL(chain, s)
+		if err != nil {
+			fmt.Printf("  ⚠  skipping %s: SQL reconstruction failed: %v\n", name, err)
+			continue
+		}
+
+		art := &PromotedArtifact{
+			ExportName:   exportName,
+			Kind:         "model",
+			PromotedFrom: name,
+			PromotedAt:   time.Now(),
+		}
+		s.Promoted[exportName] = art
+		added = append(added, art)
+
+		if len(warnings) > 0 {
+			fmt.Printf("  promoted %s (⚠  non-portable: %s)\n", name, strings.Join(warnings, "; "))
+		} else {
+			fmt.Printf("  promoted %s\n", name)
+		}
+	}
+	return added
+}
+
 // --- export ---
 
 func execExport(args []string, s *Session) error {

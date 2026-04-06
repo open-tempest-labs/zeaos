@@ -241,6 +241,7 @@ type publishArgs struct {
 	TokenName    string
 	IsNew        bool
 	IsPR         bool
+	AutoPromote  bool // promote all unpromoted tables before publishing
 }
 
 func parsePublishArgs(args []string) (publishArgs, error) {
@@ -266,6 +267,8 @@ func parsePublishArgs(args []string) (publishArgs, error) {
 			pa.IsNew = true
 		case args[i] == "--pr":
 			pa.IsPR = true
+		case args[i] == "--auto-promote":
+			pa.AutoPromote = true
 		case !strings.HasPrefix(args[i], "--") && pa.ArtifactName == "":
 			pa.ArtifactName = args[i]
 		}
@@ -291,6 +294,15 @@ func execPublish(args []string, s *Session) error {
 	pa, err := parsePublishArgs(args)
 	if err != nil {
 		return err
+	}
+
+	// Auto-promote all eligible session tables if requested.
+	if pa.AutoPromote {
+		fmt.Println("Auto-promoting session tables...")
+		added := autoPromoteAll(s)
+		if len(added) == 0 && len(s.Promoted) == 0 {
+			return fmt.Errorf("publish: no tables could be promoted — load some data first")
+		}
 	}
 
 	// Resolve which artifacts to publish.
@@ -810,6 +822,7 @@ OPTIONS
   --new                create the repository if it does not exist
   --pr                 open a pull request instead of pushing directly
   --token NAME         use named token from token store
+  --auto-promote       promote all eligible session tables before publishing
 
 TOKEN MANAGEMENT
   publish token add <name> --pat <token>   store a GitHub PAT

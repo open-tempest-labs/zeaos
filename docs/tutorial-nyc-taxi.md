@@ -291,4 +291,8 @@ When these bugs are fixed upstream in DuckDB's Arrow C Data Interface, the worka
 
 ---
 
+**Continue:** [Publishing NYC Taxi Analysis to dbt via GitHub](tutorial-nyc-taxi-publish) — promote, validate, and push the session to GitHub as a dbt Core project in one command.
+
+---
+
 *ZeaOS is developed by [Open Tempest Labs](https://github.com/open-tempest-labs). Source: [github.com/open-tempest-labs/zeaos](https://github.com/open-tempest-labs/zeaos)*
