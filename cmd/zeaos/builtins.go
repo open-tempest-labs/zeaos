@@ -406,17 +406,50 @@ func execSave(name, dest string, s *Session) error {
 	return nil
 }
 
+// resolvePlugin finds a plugin script by name, searching:
+//  1. ~/.zeaos/plugins/<name>  (ZeaOS-native)
+//  2. ~/.zea/plugins/<name>    (zeashell-compatible, no zeashell binary required)
+//
+// Returns the resolved path or an error listing both search locations.
+func resolvePlugin(name string) (string, error) {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".zeaos", "plugins", name),
+		filepath.Join(home, ".zea", "plugins", name),
+	}
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("plugin %q not found — install it at ~/.zeaos/plugins/%s or ~/.zea/plugins/%s", name, name, name)
+}
+
+// pluginEnv returns the environment for plugin execution: the current process
+// environment plus ZeaOS-specific vars so scripts can locate session data.
+func pluginEnv(s *Session) []string {
+	env := os.Environ()
+	if s != nil {
+		env = append(env,
+			"ZEAOS_SESSION_DIR="+s.Dir,
+			"ZEAOS_TABLES_DIR="+s.TablesDir,
+		)
+	}
+	return env
+}
+
 // execPluginRun streams a plugin's output directly to the terminal.
 // Syntax: zearun NAME [ARGS...]
 func execPluginRun(args []string, s *Session) error {
 	if len(args) == 0 {
 		return fmt.Errorf("zearun: plugin name required")
 	}
-	zeaBin, err := exec.LookPath("zea")
+	scriptPath, err := resolvePlugin(args[0])
 	if err != nil {
-		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
+		return err
 	}
-	c := exec.Command(zeaBin, append([]string{"run", args[0]}, args[1:]...)...)
+	c := exec.Command(scriptPath, args[1:]...)
+	c.Env = pluginEnv(s)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
 }
@@ -428,19 +461,22 @@ func execPluginCapture(cmd *Cmd, s *Session) error {
 		return fmt.Errorf("zearun: plugin name required")
 	}
 	pluginName := cmd.Args[0]
-	pluginArgs := cmd.Args[1:]
-
-	zeaBin, err := exec.LookPath("zea")
+	scriptPath, err := resolvePlugin(pluginName)
 	if err != nil {
-		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
+		return err
 	}
 
 	var buf bytes.Buffer
-	c := exec.Command(zeaBin, append([]string{"run", pluginName}, pluginArgs...)...)
+	c := exec.Command(scriptPath, cmd.Args[1:]...)
+	c.Env = pluginEnv(s)
 	c.Stdout = &buf
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("zearun %s: %w", pluginName, err)
+	}
+
+	if buf.Len() == 0 {
+		return fmt.Errorf("zearun %s: plugin produced no output — use 'zearun %s' (without assignment) for side-effect-only plugins", pluginName, pluginName)
 	}
 
 	tmp := filepath.Join(s.TablesDir, cmd.Target+"_plugin.csv")
@@ -468,39 +504,48 @@ func execPluginManage(args []string) error {
 		return execPluginList()
 	}
 	// zeaplugin <name> --help
-	name := args[0]
-	zeaBin, err := exec.LookPath("zea")
+	scriptPath, err := resolvePlugin(args[0])
 	if err != nil {
-		return fmt.Errorf("zea binary not found in PATH — is zeashell installed?")
+		return err
 	}
-	c := exec.Command(zeaBin, "run", name, "--help")
+	c := exec.Command(scriptPath, "--help")
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()
 }
 
-// execPluginList prints all available zeashell plugins from ~/.zea/plugins/.
+// execPluginList prints plugins from both ZeaOS-native and zeashell directories.
 func execPluginList() error {
 	home, _ := os.UserHomeDir()
-	pluginDir := filepath.Join(home, ".zea", "plugins")
-	entries, err := os.ReadDir(pluginDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No plugins found. Plugin directory does not exist: ~/.zea/plugins/")
-			return nil
-		}
-		return fmt.Errorf("zeaplugin list: %w", err)
+	dirs := []string{
+		filepath.Join(home, ".zeaos", "plugins"),
+		filepath.Join(home, ".zea", "plugins"),
 	}
-	if len(entries) == 0 {
-		fmt.Println("No plugins installed in ~/.zea/plugins/")
+
+	type pluginEntry struct{ name, path string }
+	seen := map[string]bool{}
+	var plugins []pluginEntry
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() && !seen[e.Name()] {
+				seen[e.Name()] = true
+				plugins = append(plugins, pluginEntry{e.Name(), filepath.Join(dir, e.Name())})
+			}
+		}
+	}
+
+	if len(plugins) == 0 {
+		fmt.Printf("No plugins found. Install scripts at ~/.zeaos/plugins/ or ~/.zea/plugins/\n")
 		return nil
 	}
 	fmt.Printf("%-24s  %s\n", "Plugin", "Path")
 	fmt.Println(strings.Repeat("─", 60))
-	for _, e := range entries {
-		if !e.IsDir() {
-			fmt.Printf("%-24s  %s\n", e.Name(),
-				filepath.Join(pluginDir, e.Name()))
-		}
+	for _, p := range plugins {
+		fmt.Printf("%-24s  %s\n", p.name, p.path)
 	}
 	fmt.Println("\nRun 'zeaplugin <name> --help' for usage details.")
 	return nil
