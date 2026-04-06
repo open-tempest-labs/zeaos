@@ -225,12 +225,25 @@ Records every load, filter, and SQL transformation in the session lineage, plus 
 
 ## Running in dbt
 
-Clone the published repo and run with dbt-DuckDB. On macOS the cleanest install path is `pipx`, which puts `dbt` on your PATH without touching the system Python:
+Clone the published repo and run with dbt-DuckDB.
+
+> **Python version:** dbt requires Python 3.12. It does not yet support Python 3.13 or 3.14. If `python3 --version` shows 3.13+ (common on recent macOS Homebrew), install 3.12 explicitly.
+
+On macOS the cleanest path is `pipx`:
 
 ```bash
-brew install pipx
-pipx install dbt-duckdb
+brew install pipx python@3.12
+pipx install dbt-duckdb --python $(brew --prefix python@3.12)/bin/python3.12
 pipx ensurepath   # adds ~/.local/bin to PATH; restart your shell once after this
+```
+
+Or with a virtual environment:
+
+```bash
+brew install python@3.12
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install dbt-duckdb
 ```
 
 Then:
@@ -238,15 +251,6 @@ Then:
 ```bash
 git clone https://github.com/lmccay/nyc-taxi-dbt
 cd nyc-taxi-dbt
-dbt run
-```
-
-If you already have a Python virtual environment you prefer:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install dbt-duckdb
 dbt run
 ```
 

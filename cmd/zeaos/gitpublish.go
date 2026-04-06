@@ -886,15 +886,15 @@ func newRepoReadme(repoName string) string {
 	return "# " + repoName + "\n\n" +
 		"dbt project exported from [ZeaOS](https://github.com/open-tempest-labs/zeaos).\n\n" +
 		"## Quickstart — local dbt + DuckDB\n\n" +
-		"The fastest way to run this project requires only Python. On macOS:\n\n" +
+		"Requires Python 3.12 (dbt does not yet support 3.13/3.14). On macOS:\n\n" +
 		"```bash\n" +
-		"brew install pipx\n" +
-		"pipx install dbt-duckdb\n" +
+		"brew install pipx python@3.12\n" +
+		"pipx install dbt-duckdb --python $(brew --prefix python@3.12)/bin/python3.12\n" +
 		"pipx ensurepath   # restart your shell after this\n" +
 		"```\n\n" +
 		"Or with a virtual environment:\n\n" +
 		"```bash\n" +
-		"python3 -m venv .venv && source .venv/bin/activate\n" +
+		"python3.12 -m venv .venv && source .venv/bin/activate\n" +
 		"pip install dbt-duckdb\n" +
 		"```\n\n" +
 		"Then:\n\n" +
