@@ -4,7 +4,17 @@ title: "Publishing NYC Taxi Analysis to dbt via GitHub"
 
 # Publishing NYC Taxi Analysis to dbt via GitHub
 
-*This tutorial picks up directly from the [NYC Taxi Analysis](tutorial-nyc-taxi) walkthrough. By the end you will have promoted the session's key analytical tables, validated their portability, published a complete dbt Core project to GitHub, and run it locally with `dbt run`.*
+*This tutorial picks up from the [NYC Taxi Analysis](tutorial-nyc-taxi) walkthrough and takes it all the way to a running dbt project. By the end you will have promoted the session's key analytical tables, published a dbt Core project to GitHub, cloned it, and run `dbt run` to materialise the models — no warehouse, no cloud account, no data loading required.*
+
+---
+
+## Why This Works Without a Warehouse
+
+The source data for this analysis is a public Parquet file served over HTTPS by the NYC Taxi and Limousine Commission. DuckDB can read HTTPS Parquet files directly — so when dbt runs the generated models, DuckDB fetches the file at query time. No pre-loading, no ETL, no external tables.
+
+This is the reason the local dbt-DuckDB path is genuinely end-to-end: the source URL is recorded in the ZeaOS session, written into `sources/zea_sources.yml`, and resolved by DuckDB at `dbt run` time. Anyone who clones the published repo and has Python installed can run the full pipeline.
+
+> **Portability note:** This zero-setup path works when source data comes from a public HTTPS or S3 URL. If your ZeaOS session loaded data from a local file, ZeaOS will warn you at publish time and suggest saving to a ZeaDrive S3 backend first.
 
 ---
 
@@ -22,27 +32,9 @@ The session persisted to `~/.zeaos/tables/`. Start ZeaOS and it resumes automati
 
 ---
 
-## Deciding What to Promote
-
-Not every table in a session belongs in a dbt project. The rule of thumb:
-
-- **Promote** derived tables that represent finished analytical views — the tables a downstream consumer would actually query.
-- **Skip** intermediate scratch tables (`long_trips`, `zone_payment`) — these become `{{ source() }}` or `{{ ref() }}` references inside the promoted models, not standalone models themselves.
-- **Flag** tables with non-portable operations (PIVOT uses DuckDB-specific syntax). Promote them with a warning; the reviewer decides whether to ship them.
-
-For the taxi analysis the right set is:
-
-| Session table | Export name | Why |
-|---|---|---|
-| `zone_revenue` | `zone_revenue_by_pickup` | Core revenue analysis by pickup zone |
-| `avg_tip` | `avg_tip_by_payment` | Tip behaviour by payment type |
-| `payment_pivot` | `payment_mix_by_zone` | Payment breakdown across top zones (non-portable — PIVOT) |
-
----
-
 ## Quick Path: One-Command Plugin
 
-The entire workflow is packaged as a ZeaOS script plugin. Install it once:
+The entire workflow — load, analyse, promote, validate, publish — is packaged as a ZeaOS script plugin. Install it once:
 
 ```bash
 mkdir -p ~/.zeaos/plugins
@@ -55,13 +47,31 @@ Then from inside any ZeaOS session:
 ZeaOS> zearun taxi-dbt-publish --repo lmccay/nyc-taxi-dbt --new
 ```
 
-That single command loads the taxi data, builds the analysis tables, promotes and validates two dbt models, and publishes the bundle to GitHub. The rest of this tutorial walks through what the plugin does step by step.
+That single command loads the taxi data, builds the analysis tables, promotes and validates two dbt models, and publishes the bundle to GitHub. Skip to [Running in dbt](#running-in-dbt) to see what happens next.
+
+The rest of this tutorial walks through each step manually.
 
 ---
 
-## Option A: Manual Promote → Validate → Publish
+## Step 1 — Decide What to Promote
 
-### Step 1 — Promote
+Not every session table belongs in a dbt project:
+
+- **Promote** finished analytical views — the tables a downstream consumer would actually query.
+- **Skip** intermediate tables (`long_trips`, `zone_payment`) — these are captured as `{{ source() }}` or `{{ ref() }}` references inside the promoted models.
+- **Flag** non-portable operations — PIVOT uses DuckDB-specific syntax and will need rewriting for other adapters.
+
+For the taxi analysis:
+
+| Session table | Export name | Why |
+|---|---|---|
+| `zone_revenue` | `zone_revenue_by_pickup` | Revenue analysis by pickup zone |
+| `avg_tip` | `avg_tip_by_payment` | Tip behaviour by payment type |
+| `payment_pivot` | `payment_mix_by_zone` | Payment mix by zone (DuckDB-only PIVOT) |
+
+---
+
+## Step 2 — Promote
 
 ```
 ZeaOS> promote zone_revenue as zone_revenue_by_pickup model
@@ -72,11 +82,7 @@ promoted avg_tip → avg_tip_by_payment (model)
 
 ZeaOS> promote payment_pivot as payment_mix_by_zone model
 promoted payment_pivot → payment_mix_by_zone (model)
-```
 
-Check the promotions list:
-
-```
 ZeaOS> list --type=promotions
 Export Name               Kind        Source Table          Promoted At
 ────────────────────────────────────────────────────────────────────────
@@ -85,94 +91,63 @@ avg_tip_by_payment        model       avg_tip               2026-04-06 09:00:01
 payment_mix_by_zone       model       payment_pivot         2026-04-06 09:00:02
 ```
 
-### Step 2 — Validate
+---
 
-Run `validate --target=dbt` against each artifact to catch portability issues before they land in the repo:
+## Step 3 — Validate
+
+`validate --target=dbt` checks SQL structure, row counts, source URIs, and portability before anything is pushed:
 
 ```
 ZeaOS> validate zone_revenue_by_pickup --target=dbt
 Validating zone_revenue_by_pickup (from zone_revenue)...
-  ✓ SQL parses correctly
-  ✓ 262 rows × 4 cols
+  ✓ SQL structure valid (source refs resolve at dbt runtime)
+  ✓ 254 rows × 4 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
   ✓ portable: duckdb dialect, no non-standard functions detected
 
 ZeaOS> validate avg_tip_by_payment --target=dbt
 Validating avg_tip_by_payment (from avg_tip)...
-  ✓ SQL parses correctly
+  ✓ SQL structure valid (source refs resolve at dbt runtime)
   ✓ 5 rows × 3 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
   ✓ portable: duckdb dialect, no non-standard functions detected
 
 ZeaOS> validate payment_mix_by_zone --target=dbt
 Validating payment_mix_by_zone (from payment_pivot)...
-  ✓ SQL parses correctly
+  ✓ SQL structure valid (source refs resolve at dbt runtime)
   ✓ 10 rows × 7 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
   ⚠  PIVOT uses DuckDB-specific syntax — may not run on other adapters
 ```
 
-Two models are fully portable. `payment_mix_by_zone` works on DuckDB but will need manual rewriting for BigQuery, Snowflake, or Redshift. The warning is recorded in the model YAML's `meta.zea_warnings` field so it's visible to reviewers.
+The source URI check is what makes the dbt-DuckDB path work end-to-end. Because the source is a public HTTPS URL, the `✓ source URIs` line means anyone who clones the repo can run `dbt run` immediately.
 
-### Step 3 — Publish to GitHub
+---
 
-Create a new GitHub repository and push the bundle in one command. If `gh` is already authenticated, no token setup is needed — ZeaOS picks it up automatically:
+## Step 4 — Publish to GitHub
+
+If `gh` is already authenticated, no token setup is needed — ZeaOS picks it up automatically:
 
 ```
 ZeaOS> publish --repo lmccay/nyc-taxi-dbt --new
 Generating export bundle...
-creating repository lmccay/nyc-taxi-dbt...
-initialising repo with dbt scaffold...
-  wrote models/zone_revenue_by_pickup.sql
-  wrote models/zone_revenue_by_pickup.yml
-  wrote models/avg_tip_by_payment.sql
-  wrote models/avg_tip_by_payment.yml
-  wrote models/payment_mix_by_zone.sql
-  wrote models/payment_mix_by_zone.yml
-  wrote sources/zea_sources.yml
-  wrote dbt_project.yml
-  wrote profiles.yml
-  wrote zea_export.json
-  wrote README.md
-  wrote .gitignore
+  created models/zone_revenue_by_pickup.sql
+  created models/zone_revenue_by_pickup.yml
+  created models/avg_tip_by_payment.sql
+  created models/avg_tip_by_payment.yml
+  created models/payment_mix_by_zone.sql
+  created models/payment_mix_by_zone.yml
+  created sources/zea_sources.yml
+  created dbt_project.yml
+  created profiles.yml
+  created zea_export.json
+  created README.md
+  created .gitignore
+Creating GitHub repo lmccay/nyc-taxi-dbt...
+  created: https://github.com/lmccay/nyc-taxi-dbt
 commit: ZeaOS v0.2.0: initial export — zone_revenue_by_pickup, avg_tip_by_payment, payment_mix_by_zone
-pushing to lmccay/nyc-taxi-dbt main...
 ✓ Published to https://github.com/lmccay/nyc-taxi-dbt
 ```
-
-To push as a PR to an existing team project instead:
-
-```
-ZeaOS> publish --repo acme-data/dbt-main --pr
-```
-
----
-
-## Option B: One-Shot with `--auto-promote`
-
-If you want ZeaOS to decide what to promote and push everything in a single command:
-
-```
-ZeaOS> publish --repo lmccay/nyc-taxi-dbt --new --auto-promote
-Auto-promoting session tables...
-  promoted trips
-  promoted cc_trips
-  promoted jfk_trips
-  promoted long_trips
-  promoted zone_revenue
-  promoted top_zones
-  promoted zone_payment
-  promoted avg_tip
-  promoted payment_pivot (⚠  non-portable: PIVOT uses DuckDB-specific syntax)
-Generating export bundle...
-creating repository lmccay/nyc-taxi-dbt...
-  ...
-✓ Published to https://github.com/lmccay/nyc-taxi-dbt
-```
-
-`--auto-promote` promotes every eligible session table that isn't already promoted. It skips tables with names that start with `_` (internal scratch) and tables where SQL reconstruction fails. Non-portable tables are promoted with a warning, not silently dropped.
-
-For a first exploration this is a good way to get everything into a repo quickly and then prune from there. For a production handoff the selective approach in Option A produces a cleaner result.
 
 ---
 
@@ -201,13 +176,15 @@ nyc-taxi-dbt/
 ```sql
 {{ config(materialized='table') }}
 
-SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(fare_amount), 2) AS total_fare, ROUND(AVG(tip_amount), 2) AS avg_tip
+SELECT PULocationID, COUNT(*) AS trips,
+       ROUND(SUM(fare_amount), 2) AS total_fare,
+       ROUND(AVG(tip_amount), 2) AS avg_tip
 FROM {{ source('zea_http', 'long_trips') }}
 GROUP BY PULocationID
 ORDER BY total_fare DESC
 ```
 
-Session table references are rewritten to `{{ source() }}` (for HTTP-loaded tables) and `{{ ref() }}` (for derived session tables). The full lineage chain — `trips → long_trips → zone_revenue` — is preserved in `zea_export.json`.
+ZeaOS rewrites session table references to dbt Jinja calls: HTTP-loaded tables become `{{ source() }}`, derived session tables become `{{ ref() }}`. The full lineage chain — `trips → long_trips → zone_revenue` — is preserved in `zea_export.json`.
 
 ### `sources/zea_sources.yml`
 
@@ -224,59 +201,121 @@ sources:
         description: "Filtered trips from https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet (where trip_distance > 2.0)"
 ```
 
-The "generated by ZeaOS" marker lets `publish` merge safely into the file on subsequent pushes without overwriting sources added by other team members.
+This is the file that connects dbt's `{{ source('zea_http', 'long_trips') }}` reference to the actual data. DuckDB resolves it by reading the Parquet directly from HTTPS at query time.
+
+### `profiles.yml`
+
+```yaml
+zea_local:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: 'local.duckdb'
+      threads: 4
+```
+
+Configures dbt to use DuckDB with a local database file. This is for local development only — dbt Cloud manages its own connections.
 
 ### `zea_export.json`
 
-Records the full lineage for each artifact: every load, filter, and SQL transformation, plus row counts, source URIs, portability status, and the session ID. This is the artifact reviewers use to understand where a model came from without having to run the pipeline themselves.
+Records every load, filter, and SQL transformation in the session lineage, plus source URIs, row counts, and portability status. This is how a reviewer understands where a model came from without having to re-run the pipeline.
 
 ---
 
 ## Running in dbt
 
+Clone the published repo and run with dbt-DuckDB — the only requirement is Python:
+
 ```bash
+git clone https://github.com/lmccay/nyc-taxi-dbt
 cd nyc-taxi-dbt
 pip install dbt-duckdb
-
-dbt debug --profiles-dir .   # verify connection
-dbt run                       # materialise the three models
-dbt test                      # run generated column tests
+dbt run
 ```
 
-Expected output:
+DuckDB fetches the source Parquet directly from the NYC TLC CloudFront URL at query time. No data loading step, no warehouse, no credentials. Expected output:
 
 ```
 Running with dbt=1.8.x
-Found 3 models, 12 tests, 1 source
+Found 3 models, 8 tests, 1 source
 
 Concurrency: 4 threads
 
 1 of 3 START sql table model main.zone_revenue_by_pickup .......... [RUN]
-1 of 3 OK created sql table model main.zone_revenue_by_pickup ..... [OK in 2.1s]
+1 of 3 OK created sql table model main.zone_revenue_by_pickup ..... [OK in 4.2s]
 2 of 3 START sql table model main.avg_tip_by_payment .............. [RUN]
-2 of 3 OK created sql table model main.avg_tip_by_payment ......... [OK in 0.3s]
+2 of 3 OK created sql table model main.avg_tip_by_payment ......... [OK in 3.8s]
 3 of 3 START sql table model main.payment_mix_by_zone ............. [RUN]
-3 of 3 OK created sql table model main.payment_mix_by_zone ........ [OK in 0.2s]
+3 of 3 OK created sql table model main.payment_mix_by_zone ........ [OK in 0.1s]
 
-Finished running 3 models in 0:00:02.6 seconds.
+Finished running 3 models in 0:00:08.4 seconds.
 All 3 models were created successfully.
 ```
 
-The `dbt test` pass validates the `not_null` column tests generated from the Arrow schema. Edit the `.yml` files to add `unique`, `accepted_values`, or relationship tests before promoting to a shared project.
+The first two models take a few seconds because DuckDB downloads the source Parquet on first access and caches it locally. Subsequent runs are faster.
+
+Run the generated column tests:
+
+```bash
+dbt test
+```
+
+```
+Found 3 models, 8 tests, 1 source
+
+1 of 8 PASS not_null_zone_revenue_by_pickup_PULocationID ........... [PASS]
+2 of 8 PASS not_null_zone_revenue_by_pickup_trips .................. [PASS]
+3 of 8 PASS not_null_zone_revenue_by_pickup_total_fare ............. [PASS]
+4 of 8 PASS not_null_zone_revenue_by_pickup_avg_tip ................ [PASS]
+5 of 8 PASS not_null_avg_tip_by_payment_payment_type ............... [PASS]
+6 of 8 PASS not_null_avg_tip_by_payment_avg_tip .................... [PASS]
+7 of 8 PASS not_null_avg_tip_by_payment_trips ...................... [PASS]
+8 of 8 PASS not_null_payment_mix_by_zone_PULocationID .............. [PASS]
+
+Finished running 8 tests.
+All 8 passed.
+```
+
+Generate the dbt docs site:
+
+```bash
+dbt docs generate
+dbt docs serve
+```
+
+This produces a browsable data catalog showing the full model DAG, column descriptions, test results, and source lineage — all from the files ZeaOS generated.
 
 ---
 
-## Next Steps After Publishing
+## What dbt Does With the Repo
 
-Once the bundle is in GitHub:
+To be precise about the end-to-end flow:
 
-1. **Replace `{{ source() }}` refs** with `{{ ref() }}` pointers to your project's existing staging models where appropriate — `long_trips` in the source becomes a reference to your `stg_trips` model.
+1. **dbt reads `dbt_project.yml`** — finds the project name, model paths, and materialization defaults.
+2. **dbt parses `models/*.sql`** — builds a DAG from the `{{ source() }}` and `{{ ref() }}` Jinja calls.
+3. **dbt resolves `sources/zea_sources.yml`** — maps `source('zea_http', 'long_trips')` to the source definition, which includes the HTTPS URL in its description.
+4. **dbt compiles the SQL** — substitutes Jinja calls with actual table references for the target adapter.
+5. **DuckDB executes** — for the `zea_http` source, DuckDB reads the Parquet directly from HTTPS using its built-in HTTP client.
+6. **Models are materialised** as tables in `local.duckdb`.
 
-2. **Fill in column descriptions** in the `.yml` files. ZeaOS generates `description: ""` placeholders; add business-context text before merging.
+`zea_export.json` is not read by dbt — it is metadata for humans and tools. It tells a reviewer the complete provenance of each model: which session produced it, what transformations were applied, what the source URLs are, and whether the SQL is portable to other adapters.
 
-3. **Add more tests.** The generated YAML has `not_null` tests for every column. Add `unique` tests for IDs, `accepted_values` for payment types, and `dbt_utils.expression_is_true` for numeric range checks.
+---
 
-4. **Configure a production profile.** The generated `profiles.yml` targets DuckDB local. Swap it for BigQuery, Snowflake, or Redshift as needed — but note that `payment_mix_by_zone` uses PIVOT and will need adapter-specific rewriting.
+## Next Steps
+
+**Add more tests** — the generated YAML has `not_null` for every column. Add `unique` tests for IDs, `accepted_values` for `payment_type`, and `dbt_utils.expression_is_true` for numeric range checks before sharing with a team.
+
+**Fill in descriptions** — column descriptions are blank placeholders. Add business context before the models go into a shared project.
+
+**Moving to a cloud warehouse** — when you're ready to run on BigQuery, Snowflake, or Redshift, the source data needs to land in the warehouse first (via Fivetran, Airbyte, or a custom load). Replace the `{{ source('zea_http', ...) }}` references with references to your warehouse sources. The transformation SQL stays the same.
+
+**Saving to a default repo** — set a default so you never need to type `--repo` again:
+
+```
+ZeaOS> publish set-repo lmccay/nyc-taxi-dbt
+```
 
 ---
 
