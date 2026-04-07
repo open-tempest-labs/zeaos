@@ -340,8 +340,8 @@ func generateDbtBundle(artifacts []*PromotedArtifact, outDir string, s *Session)
 	for _, dir := range []string{
 		outDir,
 		filepath.Join(outDir, "models"),
-		filepath.Join(outDir, "sources"),
 		filepath.Join(outDir, "seeds"),
+		filepath.Join(outDir, "macros"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return 0, fmt.Errorf("export: %w", err)
@@ -361,6 +361,7 @@ func generateDbtBundle(artifacts []*PromotedArtifact, outDir string, s *Session)
 
 	var manifestArtifacts []manifestArtifact
 	var allSources []sourceEntry
+	generatedModels := map[string]bool{} // tracks all model names written to models/
 
 	for _, art := range artifacts {
 		chain, err := walkLineage(s, art.PromotedFrom)
@@ -382,6 +383,7 @@ func generateDbtBundle(artifacts []*PromotedArtifact, outDir string, s *Session)
 			return 0, fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sqlPath)
+		generatedModels[art.ExportName] = true
 
 		ymlPath := filepath.Join(outDir, "models", art.ExportName+".yml")
 		if err := os.WriteFile(ymlPath, []byte(buildModelYAML(art, entry, warnings)), 0o644); err != nil {
@@ -412,16 +414,81 @@ func generateDbtBundle(artifacts []*PromotedArtifact, outDir string, s *Session)
 		})
 	}
 
+	// Generate intermediate models for any {{ ref('X') }} references in the
+	// promoted models that are not themselves promoted. Resolves transitively.
+	reRef := regexp.MustCompile(`\{\{\s*ref\('([^']+)'\)\s*\}\}`)
+	modelDir := filepath.Join(outDir, "models")
+	var resolveIntermediates func(modelName string)
+	resolveIntermediates = func(modelName string) {
+		if generatedModels[modelName] {
+			return
+		}
+		if _, ok := s.Registry[modelName]; !ok {
+			return // not a session table we can reconstruct
+		}
+		chain, err := walkLineage(s, modelName)
+		if err != nil {
+			fmt.Printf("  ⚠  cannot generate intermediate model %s: %v\n", modelName, err)
+			return
+		}
+		sql, _, err := reconstructSQL(chain, s)
+		if err != nil {
+			fmt.Printf("  ⚠  cannot generate intermediate model %s: %v\n", modelName, err)
+			return
+		}
+		sqlPath := filepath.Join(modelDir, modelName+".sql")
+		if err := os.WriteFile(sqlPath, []byte(sql+"\n"), 0o644); err != nil {
+			fmt.Printf("  ⚠  cannot write intermediate model %s: %v\n", modelName, err)
+			return
+		}
+		fmt.Printf("  created %s (intermediate)\n", sqlPath)
+		generatedModels[modelName] = true
+		for _, uri := range chain.SourceURIs {
+			sn, tbl, desc := mapURIToSource(uri)
+			allSources = append(allSources, sourceEntry{SourceName: sn, TableName: tbl, Description: desc, URI: uri})
+		}
+		// Recurse for any refs in this model's SQL.
+		for _, m := range reRef.FindAllStringSubmatch(sql, -1) {
+			resolveIntermediates(m[1])
+		}
+	}
+	// Scan all generated model files for unresolved refs.
+	for modelName := range generatedModels {
+		sqlPath := filepath.Join(modelDir, modelName+".sql")
+		content, err := os.ReadFile(sqlPath)
+		if err != nil {
+			continue
+		}
+		for _, m := range reRef.FindAllStringSubmatch(string(content), -1) {
+			resolveIntermediates(m[1])
+		}
+	}
+
+	hasHTTPSources := false
 	if len(allSources) > 0 {
-		sourcesPath := filepath.Join(outDir, "sources", "zea_sources.yml")
+		sourcesPath := filepath.Join(outDir, "models", "zea_sources.yml")
 		if err := os.WriteFile(sourcesPath, []byte(buildSourcesYAML(allSources)), 0o644); err != nil {
 			return 0, fmt.Errorf("export: %w", err)
 		}
 		fmt.Printf("  created %s\n", sourcesPath)
+
+		for _, e := range allSources {
+			if strings.HasPrefix(e.URI, "http://") || strings.HasPrefix(e.URI, "https://") {
+				hasHTTPSources = true
+				break
+			}
+		}
+		if hasHTTPSources {
+			macroPath := filepath.Join(outDir, "macros", "stage_zea_sources.sql")
+			if err := os.WriteFile(macroPath, []byte(buildStagingMacro(allSources)), 0o644); err != nil {
+				return 0, fmt.Errorf("export: %w", err)
+			}
+			fmt.Printf("  created %s\n", macroPath)
+		}
 	}
 
 	projectPath := filepath.Join(outDir, "dbt_project.yml")
-	if err := os.WriteFile(projectPath, []byte(dbtProjectYML()), 0o644); err != nil {
+	if err := os.WriteFile(projectPath, []byte(dbtProjectYML(hasHTTPSources)), 0o644); err != nil {
 		return 0, fmt.Errorf("export: %w", err)
 	}
 	fmt.Printf("  created %s\n", projectPath)
@@ -495,6 +562,22 @@ func walkLineage(s *Session, tableName string) (*LineageChain, error) {
 			}
 			if uri != "" {
 				chain.SourceURIs = append([]string{uri}, chain.SourceURIs...)
+			}
+		}
+		if node.NodeKind == "sql" && entry.SourceSQL != "" {
+			// zeaql tables have no Parent — follow SQL references instead.
+			for refName := range s.Registry {
+				if visited[refName] {
+					continue
+				}
+				if !sqlReferencesTable(entry.SourceSQL, refName) {
+					continue
+				}
+				sub, subErr := walkLineage(s, refName)
+				if subErr == nil {
+					chain.SourceURIs = append(chain.SourceURIs, sub.SourceURIs...)
+					chain.Issues = append(chain.Issues, sub.Issues...)
+				}
 			}
 		}
 		if node.NodeKind == "zearun" {
@@ -867,6 +950,7 @@ func buildSourcesYAML(sources []sourceEntry) string {
 	b.WriteString("version: 2\n\nsources:\n")
 	for _, sn := range order {
 		b.WriteString(fmt.Sprintf("  - name: %s\n", sn))
+		b.WriteString(fmt.Sprintf("    schema: %s\n", sn))
 		b.WriteString("    description: \"ZeaOS data sources\"\n")
 		b.WriteString("    tables:\n")
 		for _, e := range grouped[sn] {
@@ -877,8 +961,8 @@ func buildSourcesYAML(sources []sourceEntry) string {
 	return b.String()
 }
 
-func dbtProjectYML() string {
-	return `name: 'zea_export'
+func dbtProjectYML(hasHTTPSources bool) string {
+	base := `name: 'zea_export'
 version: '1.0.0'
 config-version: 2
 
@@ -894,11 +978,68 @@ snapshot-paths: ["snapshots"]
 clean-targets:
   - "target"
   - "dbt_packages"
-
+`
+	if hasHTTPSources {
+		base += `
+on-run-start:
+  - "{{ stage_zea_sources() }}"
+`
+	}
+	base += `
 models:
   zea_export:
     materialized: table
 `
+	return base
+}
+
+// buildStagingMacro returns a dbt macro that creates DuckDB schemas and views
+// for each HTTP/HTTPS source before models run. This is what makes
+// {{ source('zea_http', 'table') }} resolve at dbt run time.
+func buildStagingMacro(sources []sourceEntry) string {
+	var b strings.Builder
+	b.WriteString("{% macro stage_zea_sources() %}\n")
+	seenSchemas := map[string]bool{}
+	for _, e := range sources {
+		if !strings.HasPrefix(e.URI, "http://") && !strings.HasPrefix(e.URI, "https://") {
+			continue
+		}
+		if !seenSchemas[e.SourceName] {
+			seenSchemas[e.SourceName] = true
+			b.WriteString(fmt.Sprintf("  {%% do run_query(\"CREATE SCHEMA IF NOT EXISTS %s\") %%}\n", e.SourceName))
+		}
+		b.WriteString(fmt.Sprintf(
+			"  {%% do run_query(\"CREATE OR REPLACE VIEW %s.%s AS SELECT * FROM read_parquet('%s')\") %%}\n",
+			e.SourceName, e.TableName, e.URI))
+	}
+	b.WriteString("{% endmacro %}\n")
+	return b.String()
+}
+
+// buildMotherDuckAwareStagingMacro returns an updated staging macro that skips
+// HTTPS view creation when the dbt target is MotherDuck (path contains "md:").
+// Used to update the published repo after a push --target md: so that
+// dbt run --target prod uses the materialized MotherDuck tables directly.
+func buildMotherDuckAwareStagingMacro(sources []sourceEntry) string {
+	var b strings.Builder
+	b.WriteString("{% macro stage_zea_sources() %}\n")
+	b.WriteString("  {% if target.type == 'duckdb' and 'md:' not in (target.path | default('')) %}\n")
+	seenSchemas := map[string]bool{}
+	for _, e := range sources {
+		if !strings.HasPrefix(e.URI, "http://") && !strings.HasPrefix(e.URI, "https://") {
+			continue
+		}
+		if !seenSchemas[e.SourceName] {
+			seenSchemas[e.SourceName] = true
+			b.WriteString(fmt.Sprintf("    {%% do run_query(\"CREATE SCHEMA IF NOT EXISTS %s\") %%}\n", e.SourceName))
+		}
+		b.WriteString(fmt.Sprintf(
+			"    {%% do run_query(\"CREATE OR REPLACE VIEW %s.%s AS SELECT * FROM read_parquet('%s')\") %%}\n",
+			e.SourceName, e.TableName, e.URI))
+	}
+	b.WriteString("  {% endif %}\n")
+	b.WriteString("{% endmacro %}\n")
+	return b.String()
 }
 
 func dbtProfilesYML() string {

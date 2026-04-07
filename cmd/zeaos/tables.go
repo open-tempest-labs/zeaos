@@ -34,6 +34,9 @@ type TableEntry struct {
 	SourceSQL string `json:"source_sql,omitempty"` // verbatim zeaql query, if applicable
 	SourceURI string `json:"source_uri,omitempty"` // original load URI before path expansion
 
+	// Push history — recorded each time this table is pushed to an external target.
+	PushRecords []PushRecord `json:"push_records,omitempty"`
+
 	// Runtime-only Arrow state — not serialised.
 	records []arrow.Record
 	schema  *arrow.Schema
@@ -475,6 +478,18 @@ func (s *Session) spillAll(ctx context.Context) error {
 		_ = s.spillOne(ctx, entry)
 	}
 	return nil
+}
+
+// ensureSpilled guarantees a table's Parquet file is present on disk.
+// Called by push before handing the file path to an external target.
+func (s *Session) ensureSpilled(entry *TableEntry) error {
+	return s.spillOne(context.Background(), entry)
+}
+
+// getEnv returns the value of the named environment variable.
+func getEnv(key string) string {
+	// os.Getenv is the canonical way; wrapping here keeps push.go import-free.
+	return os.Getenv(key)
 }
 
 // sessionData is the persisted envelope for session.json.

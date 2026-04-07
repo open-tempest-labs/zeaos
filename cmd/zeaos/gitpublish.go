@@ -30,6 +30,9 @@ type zeaosConfig struct {
 		DefaultRepo   string `json:"default_repo,omitempty"`
 		DefaultBranch string `json:"default_branch,omitempty"`
 	} `json:"github,omitempty"`
+	Push struct {
+		DefaultTarget string `json:"default_target,omitempty"`
+	} `json:"push,omitempty"`
 }
 
 func configPath() string {
@@ -702,6 +705,70 @@ func pushWithFallback(r *gogit.Repository, pa publishArgs, token, refSpec string
 		return fmt.Errorf("no push access to %s — try --pr to open a pull request", pa.Repo)
 	}
 	return fmt.Errorf("git push: %w", err)
+}
+
+// ---------------------------------------------------------------------------
+// Post-push repo update
+// ---------------------------------------------------------------------------
+
+// updateRepoStagingMacro rewrites macros/stage_zea_sources.sql in the default
+// published repo to add a MotherDuck guard, so that dbt run --target prod
+// skips HTTPS view creation and uses the already-materialized MotherDuck tables.
+// sources is the list of HTTPS sources that were just pushed.
+// A no-op if no default repo is configured or the macro file doesn't exist.
+func updateRepoStagingMacro(pushTarget string, sources []sourceEntry) error {
+	cfg, err := loadConfig()
+	if err != nil || cfg.GitHub.DefaultRepo == "" {
+		return nil // no default repo configured — nothing to update
+	}
+
+	token, err := resolveToken("")
+	if err != nil || token == "" {
+		return nil // no token available — skip silently
+	}
+
+	repo := cfg.GitHub.DefaultRepo
+	branch := cfg.GitHub.DefaultBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	localPath := repoCachePath(repo)
+	repoURL := "https://github.com/" + repo + ".git"
+
+	r, err := cloneOrPull(repoURL, localPath, token)
+	if err != nil {
+		return fmt.Errorf("update macro: %w", err)
+	}
+
+	macroPath := filepath.Join(localPath, "macros", "stage_zea_sources.sql")
+	if _, err := os.Stat(macroPath); err != nil {
+		return nil // macro doesn't exist in this repo — nothing to update
+	}
+
+	updated := buildMotherDuckAwareStagingMacro(sources)
+	if err := os.WriteFile(macroPath, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("update macro: write: %w", err)
+	}
+
+	w, err := r.Worktree()
+	if err != nil {
+		return fmt.Errorf("update macro: worktree: %w", err)
+	}
+
+	hash, err := stageAndCommit(w,
+		fmt.Sprintf("ZeaOS: update staging macro for MotherDuck target (%s)", pushTarget))
+	if err != nil {
+		return fmt.Errorf("update macro: commit: %w", err)
+	}
+
+	refSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", branch, branch)
+	if err := pushWithFallback(r, publishArgs{Repo: repo, Branch: branch}, token, refSpec); err != nil {
+		return fmt.Errorf("update macro: push: %w", err)
+	}
+
+	fmt.Printf("  updated macros/stage_zea_sources.sql in %s (%s)\n", repo, hash.String()[:8])
+	return nil
 }
 
 // ---------------------------------------------------------------------------
