@@ -100,6 +100,12 @@ func NewSession() (*Session, error) {
 		return nil, fmt.Errorf("arrow init: %w", err)
 	}
 
+	// Auto-load installed DuckDB extensions. Non-fatal if not yet installed —
+	// install once with: duckdb -c "INSTALL <ext>"
+	for _, ext := range []string{"iceberg"} {
+		_, _ = arrowConn.ExecContext(ctx, "LOAD "+ext)
+	}
+
 	s := &Session{
 		Dir:       dir,
 		TablesDir: tablesDir,
