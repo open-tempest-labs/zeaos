@@ -61,11 +61,12 @@ func RewriteWithFieldIDs(srcPath, dstPath string) error {
 	schemaMeta := oldSchema.Metadata()
 	newSchema := arrow.NewSchema(newFields, &schemaMeta)
 
-	// Reconstruct table with the new schema. Columns are unchanged.
+	// Build new columns pairing new fields with the existing chunked data.
 	cols := make([]arrow.Column, tbl.NumCols())
 	for i := 0; i < int(tbl.NumCols()); i++ {
-		cols[i] = *tbl.Column(i)
+		cols[i] = *arrow.NewColumn(newFields[i], tbl.Column(i).Data())
 	}
+
 	newTbl := array.NewTable(newSchema, cols, tbl.NumRows())
 	defer newTbl.Release()
 
