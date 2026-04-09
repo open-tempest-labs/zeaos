@@ -90,6 +90,7 @@ type snapshotConfig struct {
 	lineage      *LineageInfo
 	operation    string
 	externalPath string // if set, register this path in manifest without copying
+	zeaDataPath  string // if set, override zea.data_file summary property (e.g. zea:// URI)
 }
 
 // WithLineage attaches ZeaOS lineage metadata to the snapshot.
@@ -124,6 +125,14 @@ func WithSourceURIs(uris ...string) SnapshotOption {
 // to avoid a redundant local copy.
 func WithExternalPath(path string) SnapshotOption {
 	return func(c *snapshotConfig) { c.externalPath = path }
+}
+
+// WithZeaDataPath sets the zea.data_file summary property independently from
+// the manifest file_path. Use this to store a portable zea:// URI in the
+// snapshot summary while registering an absolute FUSE path in the manifest
+// for compatibility with standard Iceberg readers (DuckDB, PyIceberg, etc.).
+func WithZeaDataPath(path string) SnapshotOption {
+	return func(c *snapshotConfig) { c.zeaDataPath = path }
 }
 
 // WithPromotedAs records the alias under which this table was promoted in ZeaOS.
@@ -182,11 +191,15 @@ func (t *Table) AppendSnapshot(srcParquetPath string, rowCount int64, opts ...Sn
 	// since it's the same bytes and the source is guaranteed readable here.
 	dataHash, hashErr := hashFile(srcParquetPath)
 
+	zeaDataFile := dataPath
+	if cfg.zeaDataPath != "" {
+		zeaDataFile = cfg.zeaDataPath
+	}
 	summary := map[string]string{
 		"operation":        cfg.operation,
 		"added-data-files": "1",
 		"added-records":    fmt.Sprintf("%d", rowCount),
-		"zea.data_file":    dataPath,
+		"zea.data_file":    zeaDataFile,
 	}
 	if hashErr == nil {
 		summary["zea.data_sha256"] = dataHash

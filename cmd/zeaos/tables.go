@@ -14,8 +14,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/gdamore/tcell/v2"
-	"github.com/marcboeker/go-duckdb"
-	_ "github.com/marcboeker/go-duckdb"
+	duckdb "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/rivo/tview"
 )
 

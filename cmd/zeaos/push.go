@@ -659,10 +659,13 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	}
 
 	// Build metadata locally with externalPath — no data copy into staging.
-	// Store the zea:// path so any ZeaOS user can resolve it, not just the pusher.
+	// Store the FUSE-resolved path so DuckDB and other Iceberg readers can open
+	// the file directly. The zea:// path is retained in the snapshot summary via
+	// zea.data_file for ZeaOS internal tracking.
 	if err := tbl.AppendSnapshot(entry.FilePath, entry.RowCount,
 		zeaberg.WithLineage(lineage),
-		zeaberg.WithExternalPath(dataZeaPath),
+		zeaberg.WithExternalPath(dataFSPath),
+		zeaberg.WithZeaDataPath(dataZeaPath),
 	); err != nil {
 		return nil, fmt.Errorf("iceberg append snapshot: %w", err)
 	}
