@@ -61,7 +61,8 @@ type VerifyOptions struct {
 // VerifyTable reads the Iceberg table at location and verifies each snapshot
 // that carries a zea.data_sha256 property. Snapshots written by external tools
 // (no zea.data_sha256) are reported as VerifyStatusUnattested, not as failures.
-func VerifyTable(location string, opts ...VerifyOptions) ([]SnapshotVerification, error) {
+// Returns the table UUID alongside results so callers can key a verify cache.
+func VerifyTable(location string, opts ...VerifyOptions) (string, []SnapshotVerification, error) {
 	var resolver func(string) string
 	if len(opts) > 0 && opts[0].DataFileResolver != nil {
 		resolver = opts[0].DataFileResolver
@@ -69,7 +70,7 @@ func VerifyTable(location string, opts ...VerifyOptions) ([]SnapshotVerification
 
 	meta, _, err := readMetadata(location)
 	if err != nil {
-		return nil, fmt.Errorf("read metadata: %w", err)
+		return "", nil, fmt.Errorf("read metadata: %w", err)
 	}
 
 	results := make([]SnapshotVerification, 0, len(meta.Snapshots))
@@ -116,7 +117,7 @@ func VerifyTable(location string, opts ...VerifyOptions) ([]SnapshotVerification
 		}
 		results = append(results, result)
 	}
-	return results, nil
+	return meta.TableUUID, results, nil
 }
 
 // hashFile computes the SHA-256 hex digest of a file's contents.

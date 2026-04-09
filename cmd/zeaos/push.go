@@ -644,10 +644,11 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	tableZeaPath := t.zeaPath + "/" + schema + "/" + entry.Name
 	tableFSPath := t.drive.ExpandPath(tableZeaPath)
 
-	// Determine the final data file path on ZeaDrive so zeaberg registers it
-	// in the manifest without copying the data locally first.
+	// Register the data file as a zea:// path in the manifest so any ZeaOS
+	// user (not just the pusher) can resolve it via their own ExpandPath.
 	snapshotID := time.Now().UnixMilli()
-	dataFSPath := filepath.Join(tableFSPath, "data", fmt.Sprintf("%d.parquet", snapshotID))
+	dataZeaPath := tableZeaPath + "/data/" + fmt.Sprintf("%d.parquet", snapshotID)
+	dataFSPath := t.drive.ExpandPath(dataZeaPath)
 
 	var tbl *zeaberg.Table
 	tbl, err = zeaberg.CreateTable(stagingDir, arrowSchema,
@@ -658,9 +659,10 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	}
 
 	// Build metadata locally with externalPath — no data copy into staging.
+	// Store the zea:// path so any ZeaOS user can resolve it, not just the pusher.
 	if err := tbl.AppendSnapshot(entry.FilePath, entry.RowCount,
 		zeaberg.WithLineage(lineage),
-		zeaberg.WithExternalPath(dataFSPath),
+		zeaberg.WithExternalPath(dataZeaPath),
 	); err != nil {
 		return nil, fmt.Errorf("iceberg append snapshot: %w", err)
 	}
@@ -714,29 +716,17 @@ func copyDirToFUSE(srcDir, dstDir, label string) error {
 	})
 }
 
-// copyFileToFUSE copies a single small file to a FUSE path, ignoring
-// the fsync "operation not supported" error that Volumez returns.
+// copyFileToFUSE copies a single small metadata file to a FUSE path.
+// Uses read-all / write-all rather than streaming so the kernel buffer is
+// fully committed before the file handle is closed — streaming + deferred
+// Close() leaves 1–2 byte files (e.g. version-hint.text) empty on some
+// FUSE backends (e.g. Volumez) that silently ignore fsync.
 func copyFileToFUSE(src, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	err = out.Sync()
-	if err != nil && !strings.Contains(err.Error(), "operation not supported") {
-		return err
-	}
-	return nil
+	return os.WriteFile(dst, data, 0644)
 }
 
 // buildLineageInfo constructs a zeaberg.LineageInfo from the session entry's

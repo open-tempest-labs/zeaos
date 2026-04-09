@@ -718,8 +718,10 @@ PUSH
   push sync --target md:database     check for drift and re-push if stale
 
 ICEBERG
-  iceberg verify [<table>...]        verify Iceberg snapshot SHA-256 hashes
+  iceberg verify [<table>...]        verify snapshot SHA-256 hashes against remote
                                      accepts table name or zea:// path
+                                     tracks change history across verify runs
+  iceberg repair <table>...          re-copy metadata to remote after a failed push
 
 PLUGINS
   zearun <name> [args]               run plugin, stream output to terminal
