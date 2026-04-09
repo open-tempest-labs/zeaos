@@ -658,11 +658,23 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 		return nil, fmt.Errorf("iceberg create (staging): %w", err)
 	}
 
+	// Rewrite the Parquet file with Iceberg field IDs embedded before registering
+	// it. DuckDB's iceberg_scan matches columns by field ID; without them every
+	// column reads as NULL. The rewritten file also has the correct size for the
+	// manifest entry.
+	rewrittenParquet := filepath.Join(stagingDir, "data", "data.parquet")
+	if err := os.MkdirAll(filepath.Dir(rewrittenParquet), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir rewrite: %w", err)
+	}
+	if err := zeaberg.RewriteWithFieldIDs(entry.FilePath, rewrittenParquet); err != nil {
+		return nil, fmt.Errorf("rewrite parquet field IDs: %w", err)
+	}
+
 	// Build metadata locally with externalPath — no data copy into staging.
 	// Store the FUSE-resolved path so DuckDB and other Iceberg readers can open
 	// the file directly. The zea:// path is retained in the snapshot summary via
 	// zea.data_file for ZeaOS internal tracking.
-	if err := tbl.AppendSnapshot(entry.FilePath, entry.RowCount,
+	if err := tbl.AppendSnapshot(rewrittenParquet, entry.RowCount,
 		zeaberg.WithLineage(lineage),
 		zeaberg.WithExternalPath(dataFSPath),
 		zeaberg.WithZeaDataPath(dataZeaPath),
@@ -676,11 +688,11 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 		return nil, fmt.Errorf("copy iceberg metadata to ZeaDrive: %w", err)
 	}
 
-	// Stream the Parquet data file directly to its registered path on ZeaDrive.
+	// Stream the rewritten Parquet data file to its registered path on ZeaDrive.
 	if err := os.MkdirAll(filepath.Dir(dataFSPath), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir data: %w", err)
 	}
-	if err := streamCopyWithProgress(entry.FilePath, dataFSPath, entry.Name); err != nil {
+	if err := streamCopyWithProgress(rewrittenParquet, dataFSPath, entry.Name); err != nil {
 		return nil, fmt.Errorf("stream parquet to ZeaDrive: %w", err)
 	}
 
