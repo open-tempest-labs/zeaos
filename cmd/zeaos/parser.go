@@ -53,7 +53,7 @@ func ParseLine(line string) (*Cmd, error) {
 	parts := shellSplit(line)
 	if len(parts) > 0 {
 		switch parts[0] {
-		case "zeaview", "hist", "status", "drop", "save", "promote", "list", "validate", "export", "publish", "push", "verify", "zearun", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
+		case "zeaview", "hist", "status", "drop", "save", "promote", "list", "validate", "export", "publish", "push", "zearun", "zeaplugin", "zeadrive", "describe", "?", "help", "enable-s3":
 			cmd.Type = CmdBuiltin
 			cmd.Builtin = parts[0]
 			cmd.Args = parts[1:]

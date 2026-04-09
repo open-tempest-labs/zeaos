@@ -309,8 +309,6 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPublish(cmd.Args, s)
 	case "push":
 		return execPush(cmd.Args, s)
-	case "verify":
-		return execVerify(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":
@@ -709,6 +707,15 @@ PROMOTE & EXPORT
   validate <name> --target=dbt       check portability for target
   export [<name>] --target=dbt [-o DIR]
                                      write export bundle (default dir: ./zea-dbt-export)
+
+PUSH
+  push --target md:database          push session tables to MotherDuck
+  push --target zea://backend/path   push to ZeaDrive as flat Parquet
+  push --target zea://... --iceberg  push as Apache Iceberg v2 table (ZeaDrive)
+  push status                        show push history
+  push sync --target md:database     check for drift and re-push if stale
+  push verify [<table>...]           verify Iceberg snapshot SHA-256 hashes
+                                     use zea:// path to verify by direct path
 
 PLUGINS
   zearun <name> [args]               run plugin, stream output to terminal
