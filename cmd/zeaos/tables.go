@@ -100,9 +100,11 @@ func NewSession() (*Session, error) {
 		return nil, fmt.Errorf("arrow init: %w", err)
 	}
 
-	// Auto-load installed DuckDB extensions. Non-fatal if not yet installed —
-	// install once with: duckdb -c "INSTALL <ext>"
+	// Install and load DuckDB extensions. INSTALL is a no-op if already
+	// present; both steps are non-fatal so a missing network or unsupported
+	// platform does not prevent ZeaOS from starting.
 	for _, ext := range []string{"iceberg"} {
+		_, _ = arrowConn.ExecContext(ctx, "INSTALL "+ext)
 		_, _ = arrowConn.ExecContext(ctx, "LOAD "+ext)
 	}
 
