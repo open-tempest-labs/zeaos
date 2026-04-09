@@ -14,7 +14,7 @@ import (
 
 // writeManifestFiles writes the manifest file and manifest list for a single
 // Parquet data file being added as a new snapshot. Returns the manifest list path.
-func writeManifestFiles(tableLocation string, schema *iceberg.Schema, snapshotID, rowCount, fileSize int64, parquetPath string) (string, error) {
+func writeManifestFiles(tableLocation string, schema *iceberg.Schema, snapshotID, seqNum, rowCount, fileSize int64, parquetPath string) (string, error) {
 	metaDir := filepath.Join(tableLocation, "metadata")
 	if err := os.MkdirAll(metaDir, 0755); err != nil {
 		return "", err
@@ -50,7 +50,7 @@ func writeManifestFiles(tableLocation string, schema *iceberg.Schema, snapshotID
 	}
 
 	snapID := snapshotID
-	entry := iceberg.NewManifestEntry(iceberg.EntryStatusADDED, &snapID, nil, nil, df.Build())
+	entry := iceberg.NewManifestEntry(iceberg.EntryStatusADDED, &snapID, &seqNum, &seqNum, df.Build())
 	if err := mw.Add(entry); err != nil {
 		return "", fmt.Errorf("add manifest entry: %w", err)
 	}
@@ -69,7 +69,7 @@ func writeManifestFiles(tableLocation string, schema *iceberg.Schema, snapshotID
 
 	// Write manifest list
 	var listBuf bytes.Buffer
-	mlw, err := iceberg.NewManifestListWriterV2(&listBuf, snapshotID, 0, nil)
+	mlw, err := iceberg.NewManifestListWriterV2(&listBuf, snapshotID, seqNum, nil)
 	if err != nil {
 		return "", fmt.Errorf("create manifest list writer: %w", err)
 	}

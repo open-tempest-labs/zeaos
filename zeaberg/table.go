@@ -149,6 +149,8 @@ func (t *Table) AppendSnapshot(srcParquetPath string, rowCount int64, opts ...Sn
 	}
 
 	snapshotID := newSnapshotID()
+	t.meta.LastSequenceNumber++
+	seqNum := t.meta.LastSequenceNumber
 
 	var dataPath string
 	if cfg.externalPath != "" {
@@ -171,7 +173,7 @@ func (t *Table) AppendSnapshot(srcParquetPath string, rowCount int64, opts ...Sn
 		return fmt.Errorf("stat parquet file: %w", err)
 	}
 
-	listPath, err := writeManifestFiles(t.Location, t.schema, snapshotID, rowCount, stat.Size(), dataPath)
+	listPath, err := writeManifestFiles(t.Location, t.schema, snapshotID, seqNum, rowCount, stat.Size(), dataPath)
 	if err != nil {
 		return fmt.Errorf("write manifest files: %w", err)
 	}

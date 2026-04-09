@@ -26,9 +26,10 @@ type tableMetadata struct {
 	PartitionSpecs []partitionSpec    `json:"partition-specs"`
 	DefaultSpecID  int                `json:"default-spec-id"`
 	LastPartitionID int               `json:"last-partition-id"`
-	SortOrders     []sortOrder        `json:"sort-orders"`
-	DefaultSortOrderID int            `json:"default-sort-order-id"`
-	Snapshots      []snapshotMeta     `json:"snapshots"`
+	SortOrders          []sortOrder        `json:"sort-orders"`
+	DefaultSortOrderID  int                `json:"default-sort-order-id"`
+	LastSequenceNumber  int64              `json:"last-sequence-number"`
+	Snapshots           []snapshotMeta     `json:"snapshots"`
 	CurrentSnapshotID *int64          `json:"current-snapshot-id,omitempty"`
 	SnapshotLog    []snapshotLogEntry `json:"snapshot-log"`
 	MetadataLog    []metadataLogEntry `json:"metadata-log"`
