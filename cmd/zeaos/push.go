@@ -34,7 +34,7 @@ type PushRecord struct {
 // ---------------------------------------------------------------------------
 
 type pushArgs struct {
-	Subcommand string   // "", "status", "sync", "verify"
+	Subcommand string   // "", "status", "sync"
 	Target     string   // "md:database", "s3://...", etc.
 	Tables     []string // specific session tables; empty = all promoted sources
 	Schema     string   // override target schema name (default: "zea_exports")
@@ -48,18 +48,13 @@ func parsePushArgs(args []string) (*pushArgs, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("push: target required — e.g. push --target md:my_database\n" +
 			"  push status                     show push history\n" +
-			"  push verify [<table>...]         verify Iceberg snapshot hashes\n" +
 			"  push sync --target md:database  check for drift and re-push if stale")
 	}
 
-	// Subcommands: status, sync, verify
+	// Subcommands: status, sync
 	switch args[0] {
 	case "status":
 		pa.Subcommand = "status"
-		return pa, nil
-	case "verify":
-		pa.Subcommand = "verify"
-		pa.Tables = args[1:]
 		return pa, nil
 	case "sync":
 		pa.Subcommand = "sync"
@@ -126,8 +121,6 @@ func execPush(args []string, s *Session) error {
 	switch pa.Subcommand {
 	case "status":
 		return execPushStatus(s)
-	case "verify":
-		return execVerify(pa.Tables, s)
 	case "sync":
 		return execPushSync(pa, s)
 	default:

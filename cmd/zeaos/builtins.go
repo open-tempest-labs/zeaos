@@ -309,6 +309,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPublish(cmd.Args, s)
 	case "push":
 		return execPush(cmd.Args, s)
+	case "iceberg":
+		return execIceberg(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":
@@ -714,8 +716,10 @@ PUSH
   push --target zea://... --iceberg  push as Apache Iceberg v2 table (ZeaDrive)
   push status                        show push history
   push sync --target md:database     check for drift and re-push if stale
-  push verify [<table>...]           verify Iceberg snapshot SHA-256 hashes
-                                     use zea:// path to verify by direct path
+
+ICEBERG
+  iceberg verify [<table>...]        verify Iceberg snapshot SHA-256 hashes
+                                     accepts table name or zea:// path
 
 PLUGINS
   zearun <name> [args]               run plugin, stream output to terminal
