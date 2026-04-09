@@ -50,10 +50,9 @@ func repairOne(name string, s *Session) error {
 	}
 
 	tableZeaPath := rec.Target + "/" + schema + "/" + rec.TableName
-	tableFSPath := s.Drive.ExpandPath(tableZeaPath)
 
 	fmt.Printf("Repairing %s → %s...\n", name, tableZeaPath)
-	if err := copyDirToFUSE(stagingDir, tableFSPath, name); err != nil {
+	if err := s.Drive.CopyDirToMount(stagingDir, tableZeaPath); err != nil {
 		return fmt.Errorf("copy metadata to remote: %w", err)
 	}
 	fmt.Printf("  ✓ metadata repaired\n")

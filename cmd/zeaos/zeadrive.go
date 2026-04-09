@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -410,6 +415,123 @@ func (d *DriveManager) execEnableS3() error {
 		}
 	}
 	return nil
+}
+
+// WriteFile writes data to a zea:// path. For S3-backed mounts it uses the AWS
+// SDK to PUT the object directly, bypassing FUSE (which silently drops small
+// writes on some backends). For local mounts it falls back to os.WriteFile.
+// Requires ZeaDrive to be mounted.
+func (d *DriveManager) WriteFile(zeaPath string, data []byte) error {
+	if !d.IsMounted() {
+		return fmt.Errorf("ZeaDrive is not mounted — run 'zeadrive mount' first")
+	}
+	mount, subPath := d.mountAndSubpathForZeaPath(zeaPath)
+	if mount != nil && mount.Backend == "s3" {
+		return d.s3PutObject(mount, subPath, data)
+	}
+	// Local backend: write via filesystem.
+	dst := d.ExpandPath(zeaPath)
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+// CopyDirToMount copies a local directory tree to a zea:// destination,
+// skipping the data/ subdirectory (large Parquet files are streamed
+// separately). Uses WriteFile per file so S3-backed mounts go through the
+// SDK rather than FUSE.
+func (d *DriveManager) CopyDirToMount(srcDir, dstZeaBase string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		// Skip the data/ directory — Parquet files are streamed directly by
+		// the caller to avoid a redundant copy through the SDK.
+		if info.IsDir() && rel == "data" {
+			return filepath.SkipDir
+		}
+		if info.IsDir() {
+			if rel == "." {
+				return nil
+			}
+			// S3 directories are implied by key prefixes — no explicit create needed.
+			mount, _ := d.mountAndSubpathForZeaPath(dstZeaBase)
+			if mount != nil && mount.Backend == "s3" {
+				return nil
+			}
+			return os.MkdirAll(d.ExpandPath(dstZeaBase+"/"+filepath.ToSlash(rel)), 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return d.WriteFile(dstZeaBase+"/"+filepath.ToSlash(rel), data)
+	})
+}
+
+// mountAndSubpathForZeaPath resolves a zea:// path to the matching volMount
+// and the path segment after the backend name.
+func (d *DriveManager) mountAndSubpathForZeaPath(zeaPath string) (*volMount, string) {
+	rest, ok := strings.CutPrefix(zeaPath, "zea://")
+	if !ok {
+		return nil, ""
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	backendName := parts[0]
+	subPath := ""
+	if len(parts) > 1 {
+		subPath = parts[1]
+	}
+	cfg, _ := d.loadConfig()
+	if cfg == nil {
+		return nil, subPath
+	}
+	for i, m := range cfg.Mounts {
+		if strings.TrimPrefix(m.Path, "/") == backendName {
+			return &cfg.Mounts[i], subPath
+		}
+	}
+	return nil, subPath
+}
+
+// s3PutObject writes data directly to S3, bypassing FUSE.
+func (d *DriveManager) s3PutObject(mount *volMount, subPath string, data []byte) error {
+	bucket, _ := mount.Config["bucket"].(string)
+	prefix, _ := mount.Config["prefix"].(string)
+	region, _ := mount.Config["region"].(string)
+	endpoint, _ := mount.Config["endpoint"].(string)
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	// Build S3 key: join prefix and subpath, collapse double slashes.
+	key := strings.TrimPrefix(
+		strings.ReplaceAll(prefix+"/"+subPath, "//", "/"), "/")
+
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return fmt.Errorf("s3: load AWS config: %w", err)
+	}
+
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true
+		}
+	})
+
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(data),
+	})
+	return err
 }
 
 // awsCredentialsExist returns true if ~/.aws/credentials exists.

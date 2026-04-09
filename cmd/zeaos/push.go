@@ -667,8 +667,9 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 		return nil, fmt.Errorf("iceberg append snapshot: %w", err)
 	}
 
-	// Copy metadata tree (small files) to ZeaDrive.
-	if err := copyDirToFUSE(stagingDir, tableFSPath, entry.Name); err != nil {
+	// Copy metadata tree (small files) to ZeaDrive via S3 SDK (bypasses FUSE
+	// for reliable small-file writes on backends like Volumez).
+	if err := t.drive.CopyDirToMount(stagingDir, tableZeaPath); err != nil {
 		return nil, fmt.Errorf("copy iceberg metadata to ZeaDrive: %w", err)
 	}
 
@@ -692,42 +693,6 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	}, nil
 }
 
-// copyDirToFUSE copies a local directory tree to a FUSE mount path, skipping
-// the data/ subdirectory (Parquet files are streamed separately).
-func copyDirToFUSE(srcDir, dstDir, label string) error {
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return err
-		}
-		// Skip data directory — Parquet files are streamed directly to their
-		// final FUSE path by the caller to avoid a redundant local copy.
-		if info.IsDir() && rel == "data" {
-			return filepath.SkipDir
-		}
-		dst := filepath.Join(dstDir, rel)
-		if info.IsDir() {
-			return os.MkdirAll(dst, 0o755)
-		}
-		return copyFileToFUSE(path, dst)
-	})
-}
-
-// copyFileToFUSE copies a single small metadata file to a FUSE path.
-// Uses read-all / write-all rather than streaming so the kernel buffer is
-// fully committed before the file handle is closed — streaming + deferred
-// Close() leaves 1–2 byte files (e.g. version-hint.text) empty on some
-// FUSE backends (e.g. Volumez) that silently ignore fsync.
-func copyFileToFUSE(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0644)
-}
 
 // buildLineageInfo constructs a zeaberg.LineageInfo from the session entry's
 // lineage chain, embedding provenance that travels with the Iceberg snapshot.
