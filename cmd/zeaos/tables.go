@@ -486,6 +486,26 @@ func (s *Session) ensureSpilled(entry *TableEntry) error {
 	return s.spillOne(context.Background(), entry)
 }
 
+// arrowSchemaForEntry returns the Arrow schema for an entry. Uses the
+// runtime schema if already populated, otherwise reads it from the spilled
+// Parquet file via DuckDB's Arrow interface.
+func (s *Session) arrowSchemaForEntry(entry *TableEntry) (*arrow.Schema, error) {
+	if entry.schema != nil {
+		return entry.schema, nil
+	}
+	if entry.FilePath == "" {
+		return nil, fmt.Errorf("no spill file for %q", entry.Name)
+	}
+	// Execute a zero-row Arrow query to get the schema from DuckDB.
+	rdr, err := s.arrow.QueryContext(context.Background(),
+		fmt.Sprintf("SELECT * FROM read_parquet('%s') LIMIT 0", sqlEsc(entry.FilePath)))
+	if err != nil {
+		return nil, fmt.Errorf("arrow schema query: %w", err)
+	}
+	defer rdr.Release()
+	return rdr.Schema(), nil
+}
+
 // getEnv returns the value of the named environment variable.
 func getEnv(key string) string {
 	// os.Getenv is the canonical way; wrapping here keeps push.go import-free.

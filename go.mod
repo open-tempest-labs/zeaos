@@ -7,6 +7,7 @@ require (
 	github.com/chzyer/readline v1.5.1
 	github.com/gdamore/tcell/v2 v2.13.8
 	github.com/marcboeker/go-duckdb v1.8.5
+	github.com/open-tempest-labs/zeaberg-go v0.0.0
 	github.com/open-tempest-labs/zeashell v0.5.0
 	github.com/rivo/tview v0.42.0
 	github.com/spf13/cobra v1.10.2
@@ -69,3 +70,5 @@ require (
 	google.golang.org/protobuf v1.36.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
+
+replace github.com/open-tempest-labs/zeaberg-go => ./zeaberg

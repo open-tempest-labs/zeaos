@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/open-tempest-labs/zeaberg-go"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,7 @@ type PushRecord struct {
 	RowCount  int64     `json:"row_count"`
 	SourceURI string    `json:"source_uri,omitempty"` // original HTTPS/S3 URI
 	S3URI     string    `json:"s3_uri,omitempty"`     // canonical S3 URI (ZeaDrive targets only)
+	Format    string    `json:"format,omitempty"`     // "iceberg" or "" (flat parquet)
 }
 
 // ---------------------------------------------------------------------------
@@ -36,6 +39,7 @@ type pushArgs struct {
 	Tables     []string // specific session tables; empty = all promoted sources
 	Schema     string   // override target schema name (default: "zea_exports")
 	DryRun     bool
+	Iceberg    bool // write Iceberg table format (ZeaDrive targets only)
 }
 
 func parsePushArgs(args []string) (*pushArgs, error) {
@@ -71,6 +75,8 @@ func parsePushArgs(args []string) (*pushArgs, error) {
 			pa.Schema = args[i]
 		case args[i] == "--dry-run":
 			pa.DryRun = true
+		case args[i] == "--iceberg":
+			pa.Iceberg = true
 		case !strings.HasPrefix(args[i], "--"):
 			pa.Tables = append(pa.Tables, args[i])
 		}
@@ -135,7 +141,7 @@ func execPushData(pa *pushArgs, s *Session) error {
 		return fmt.Errorf("push: no tables to push — promote tables first or specify names explicitly")
 	}
 
-	target, err := openPushTarget(pa.Target, s)
+	target, err := openPushTarget(pa, s)
 	if err != nil {
 		return err
 	}
@@ -164,19 +170,22 @@ func execPushData(pa *pushArgs, s *Session) error {
 		_ = s.saveRegistry()
 		fmt.Printf("Push complete. Run 'push status' to review.\n")
 
-		// Update the staging macro in the published repo if one is configured.
-		// Collects HTTPS source URIs from the pushed tables to build the macro.
-		var sources []sourceEntry
-		for _, entry := range tables {
-			if strings.HasPrefix(entry.SourceURI, "http://") || strings.HasPrefix(entry.SourceURI, "https://") {
-				sn, tbl, desc := mapURIToSource(entry.SourceURI)
-				sources = append(sources, sourceEntry{SourceName: sn, TableName: tbl, Description: desc, URI: entry.SourceURI})
+		// Update the staging macro in the published dbt repo when pushing to
+		// MotherDuck — adds a guard so the macro skips HTTPS re-fetch in prod.
+		// Not applicable for ZeaDrive or other targets.
+		if strings.HasPrefix(pa.Target, "md:") {
+			var sources []sourceEntry
+			for _, entry := range tables {
+				if strings.HasPrefix(entry.SourceURI, "http://") || strings.HasPrefix(entry.SourceURI, "https://") {
+					sn, tbl, desc := mapURIToSource(entry.SourceURI)
+					sources = append(sources, sourceEntry{SourceName: sn, TableName: tbl, Description: desc, URI: entry.SourceURI})
+				}
 			}
-		}
-		if len(sources) > 0 {
-			fmt.Printf("Updating staging macro in published repo...\n")
-			if err := updateRepoStagingMacro(pa.Target, sources); err != nil {
-				fmt.Printf("  ⚠  could not update repo macro: %v\n", err)
+			if len(sources) > 0 {
+				fmt.Printf("Updating staging macro in published repo...\n")
+				if err := updateRepoStagingMacro(pa.Target, sources); err != nil {
+					fmt.Printf("  ⚠  could not update repo macro: %v\n", err)
+				}
 			}
 		}
 	}
@@ -258,7 +267,7 @@ func execPushStatus(s *Session) error {
 // ---------------------------------------------------------------------------
 
 func execPushSync(pa *pushArgs, s *Session) error {
-	target, err := openPushTarget(pa.Target, s)
+	target, err := openPushTarget(pa, s)
 	if err != nil {
 		return err
 	}
@@ -316,14 +325,14 @@ type pushTarget interface {
 	close()
 }
 
-func openPushTarget(target string, s *Session) (pushTarget, error) {
+func openPushTarget(pa *pushArgs, s *Session) (pushTarget, error) {
 	switch {
-	case strings.HasPrefix(target, "md:"):
-		return openMotherDuckTarget(target, s)
-	case strings.HasPrefix(target, "zea://"):
-		return openZeaDriveTarget(target, s)
+	case strings.HasPrefix(pa.Target, "md:"):
+		return openMotherDuckTarget(pa.Target, s)
+	case strings.HasPrefix(pa.Target, "zea://"):
+		return openZeaDriveTarget(pa.Target, pa.Iceberg, s)
 	default:
-		return nil, fmt.Errorf("push: unsupported target scheme %q — supported: md:, zea://", target)
+		return nil, fmt.Errorf("push: unsupported target scheme %q — supported: md:, zea://", pa.Target)
 	}
 }
 
@@ -527,13 +536,14 @@ func resolveMotherDuckToken() string {
 // ---------------------------------------------------------------------------
 
 type zeaDriveTarget struct {
-	drive    *DriveManager
-	zeaPath  string    // full zea:// target, e.g. "zea://s3-data/exports"
-	mountCfg *volMount // mount config for S3 URI derivation; nil for local-only ZeaDrive
-	session  *Session  // used for row count queries during sync
+	drive      *DriveManager
+	zeaPath    string    // full zea:// target, e.g. "zea://s3-data/exports"
+	mountCfg   *volMount // mount config for S3 URI derivation; nil for local-only ZeaDrive
+	session    *Session  // used for row count queries during sync
+	useIceberg bool      // write Iceberg table format instead of flat Parquet
 }
 
-func openZeaDriveTarget(target string, s *Session) (*zeaDriveTarget, error) {
+func openZeaDriveTarget(target string, iceberg bool, s *Session) (*zeaDriveTarget, error) {
 	if err := s.Drive.EnsureCloudMount(); err != nil {
 		return nil, fmt.Errorf("push: ZeaDrive not available: %w", err)
 	}
@@ -560,10 +570,11 @@ func openZeaDriveTarget(target string, s *Session) (*zeaDriveTarget, error) {
 	}
 
 	return &zeaDriveTarget{
-		drive:    s.Drive,
-		zeaPath:  target,
-		mountCfg: mountCfg,
-		session:  s,
+		drive:      s.Drive,
+		zeaPath:    target,
+		mountCfg:   mountCfg,
+		session:    s,
+		useIceberg: iceberg,
 	}, nil
 }
 
@@ -572,8 +583,6 @@ func (t *zeaDriveTarget) push(entry *TableEntry, schema string, dryRun bool, s *
 		return nil, fmt.Errorf("spill %s: %w", entry.Name, err)
 	}
 
-	destZeaPath := t.zeaPath + "/" + schema + "/" + entry.Name + ".parquet"
-	destFSPath := t.drive.ExpandPath(destZeaPath)
 	s3URI := t.deriveS3URI(schema, entry.Name)
 
 	if dryRun {
@@ -588,11 +597,85 @@ func (t *zeaDriveTarget) push(entry *TableEntry, schema string, dryRun bool, s *
 		}, nil
 	}
 
+	if t.useIceberg {
+		return t.pushIceberg(entry, schema, s3URI, s)
+	}
+	return t.pushParquet(entry, schema, s3URI)
+}
+
+func (t *zeaDriveTarget) pushParquet(entry *TableEntry, schema, s3URI string) (*PushRecord, error) {
+	destZeaPath := t.zeaPath + "/" + schema + "/" + entry.Name + ".parquet"
+	destFSPath := t.drive.ExpandPath(destZeaPath)
+
 	if err := os.MkdirAll(filepath.Dir(destFSPath), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 	if err := streamCopyWithProgress(entry.FilePath, destFSPath, entry.Name); err != nil {
 		return nil, fmt.Errorf("copy to ZeaDrive: %w", err)
+	}
+	return &PushRecord{
+		Target:    t.zeaPath,
+		Schema:    schema,
+		TableName: entry.Name,
+		PushedAt:  time.Now(),
+		RowCount:  entry.RowCount,
+		SourceURI: entry.SourceURI,
+		S3URI:     s3URI,
+	}, nil
+}
+
+func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s *Session) (*PushRecord, error) {
+	arrowSchema, err := s.arrowSchemaForEntry(entry)
+	if err != nil {
+		return nil, fmt.Errorf("get arrow schema for %s: %w", entry.Name, err)
+	}
+
+	lineage := buildLineageInfo(s, entry)
+
+	// Stage the Iceberg table locally — Volumez FUSE doesn't support small
+	// random-write files (manifests, version-hint.text) directly. Build the
+	// complete table under ~/.zeaos/iceberg-staging/<name>/, then copy the
+	// tree to ZeaDrive in a single streaming pass.
+	stagingDir := filepath.Join(s.Dir, "iceberg-staging", schema, entry.Name)
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return nil, fmt.Errorf("clear staging dir: %w", err)
+	}
+
+	tableZeaPath := t.zeaPath + "/" + schema + "/" + entry.Name
+	tableFSPath := t.drive.ExpandPath(tableZeaPath)
+
+	// Determine the final data file path on ZeaDrive so zeaberg registers it
+	// in the manifest without copying the data locally first.
+	snapshotID := time.Now().UnixMilli()
+	dataFSPath := filepath.Join(tableFSPath, "data", fmt.Sprintf("%d.parquet", snapshotID))
+
+	var tbl *zeaberg.Table
+	tbl, err = zeaberg.CreateTable(stagingDir, arrowSchema,
+		zeaberg.WithCanonicalLocation(tableFSPath),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("iceberg create (staging): %w", err)
+	}
+
+	// Build metadata locally with externalPath — no data copy into staging.
+	if err := tbl.AppendSnapshot(entry.FilePath, entry.RowCount,
+		zeaberg.WithLineage(lineage),
+		zeaberg.WithExternalPath(dataFSPath),
+	); err != nil {
+		return nil, fmt.Errorf("iceberg append snapshot: %w", err)
+	}
+
+	// Copy metadata tree (small files) to ZeaDrive.
+	if err := copyDirToFUSE(stagingDir, tableFSPath, entry.Name); err != nil {
+		return nil, fmt.Errorf("copy iceberg metadata to ZeaDrive: %w", err)
+	}
+
+	// Stream the Parquet data file directly to its registered path on ZeaDrive.
+	if err := os.MkdirAll(filepath.Dir(dataFSPath), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir data: %w", err)
+	}
+	if err := streamCopyWithProgress(entry.FilePath, dataFSPath, entry.Name); err != nil {
+		return nil, fmt.Errorf("stream parquet to ZeaDrive: %w", err)
 	}
 
 	return &PushRecord{
@@ -603,7 +686,88 @@ func (t *zeaDriveTarget) push(entry *TableEntry, schema string, dryRun bool, s *
 		RowCount:  entry.RowCount,
 		SourceURI: entry.SourceURI,
 		S3URI:     s3URI,
+		Format:    "iceberg",
 	}, nil
+}
+
+// copyDirToFUSE copies a local directory tree to a FUSE mount path, skipping
+// the data/ subdirectory (Parquet files are streamed separately).
+func copyDirToFUSE(srcDir, dstDir, label string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		// Skip data directory — Parquet files are streamed directly to their
+		// final FUSE path by the caller to avoid a redundant local copy.
+		if info.IsDir() && rel == "data" {
+			return filepath.SkipDir
+		}
+		dst := filepath.Join(dstDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		return copyFileToFUSE(path, dst)
+	})
+}
+
+// copyFileToFUSE copies a single small file to a FUSE path, ignoring
+// the fsync "operation not supported" error that Volumez returns.
+func copyFileToFUSE(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	err = out.Sync()
+	if err != nil && !strings.Contains(err.Error(), "operation not supported") {
+		return err
+	}
+	return nil
+}
+
+// buildLineageInfo constructs a zeaberg.LineageInfo from the session entry's
+// lineage chain, embedding provenance that travels with the Iceberg snapshot.
+func buildLineageInfo(s *Session, entry *TableEntry) *zeaberg.LineageInfo {
+	info := &zeaberg.LineageInfo{
+		SessionID:  s.Dir,
+		SourceURIs: nil,
+	}
+
+	chain, err := walkLineage(s, entry.Name)
+	if err == nil {
+		info.SourceURIs = chain.SourceURIs
+		for _, node := range chain.Nodes {
+			info.Chain = append(info.Chain, zeaberg.ChainEntry{
+				Name:      node.Entry.Name,
+				Operation: node.NodeKind,
+				SourceURI: node.Entry.SourceURI,
+			})
+		}
+	}
+
+	// Resolve PromotedAs from the promotions map.
+	for exportName, art := range s.Promoted {
+		if art.PromotedFrom == entry.Name {
+			info.PromotedAs = exportName
+			break
+		}
+	}
+
+	return info
 }
 
 // deriveS3URI constructs the canonical s3://bucket/key URI for a pushed file

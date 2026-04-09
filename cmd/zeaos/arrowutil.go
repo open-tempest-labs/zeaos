@@ -36,7 +36,8 @@ func (r *recordSliceReader) Record() arrow.Record {
 	return r.records[r.cur]
 }
 
-func (r *recordSliceReader) Err() error { return nil }
+func (r *recordSliceReader) Err() error         { return nil }
+func (r *recordSliceReader) RecordBatch() arrow.Record { return r.Record() }
 
 func (r *recordSliceReader) Retain() { atomic.AddInt64(&r.refCount, 1) }
 

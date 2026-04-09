@@ -309,6 +309,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPublish(cmd.Args, s)
 	case "push":
 		return execPush(cmd.Args, s)
+	case "verify":
+		return execVerify(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
 	case "?", "help":
