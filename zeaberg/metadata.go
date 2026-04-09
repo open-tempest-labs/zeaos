@@ -139,13 +139,11 @@ func readVersionHint(tableLocation string) (int, error) {
 }
 
 // writeVersionHint writes the current metadata version to version-hint.text.
-// The value is left-justified and space-padded to 64 bytes so that object
-// storage backends with a minimum file size (e.g. Volumez via FUSE) do not
-// silently discard the write. All standard Iceberg readers (DuckDB, PyIceberg,
-// Java) parse with trim/strip, so the padding is transparent to consumers.
+// Writes the bare integer with no padding or newline — DuckDB's iceberg_scan
+// uses the raw file content verbatim to construct the metadata filename, so
+// any extra whitespace breaks it. File size is not a concern since ZeaDrive
+// writes this via S3 SDK rather than FUSE.
 func writeVersionHint(tableLocation string, version int) error {
 	hintPath := filepath.Join(tableLocation, "metadata", "version-hint.text")
-	const minSize = 64
-	content := fmt.Sprintf("%-*d\n", minSize, version)
-	return os.WriteFile(hintPath, []byte(content), 0644)
+	return os.WriteFile(hintPath, []byte(strconv.Itoa(version)), 0644)
 }
