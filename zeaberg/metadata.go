@@ -146,6 +146,6 @@ func readVersionHint(tableLocation string) (int, error) {
 func writeVersionHint(tableLocation string, version int) error {
 	hintPath := filepath.Join(tableLocation, "metadata", "version-hint.text")
 	const minSize = 64
-	content := fmt.Sprintf("%-*d", minSize, version)
+	content := fmt.Sprintf("%-*d\n", minSize, version)
 	return os.WriteFile(hintPath, []byte(content), 0644)
 }
