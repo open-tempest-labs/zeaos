@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	iceberg "github.com/apache/iceberg-go"
@@ -123,13 +124,14 @@ func writeMetadata(tableLocation string, meta *tableMetadata, version int) (stri
 }
 
 // readVersionHint reads the current metadata version from version-hint.text.
+// The file may be padded with trailing spaces (see writeVersionHint).
 func readVersionHint(tableLocation string) (int, error) {
 	hintPath := filepath.Join(tableLocation, "metadata", "version-hint.text")
 	data, err := os.ReadFile(hintPath)
 	if err != nil {
 		return 0, fmt.Errorf("version-hint.text not found: %w", err)
 	}
-	v, err := strconv.Atoi(string(data))
+	v, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
 		return 0, fmt.Errorf("invalid version-hint.text: %w", err)
 	}
@@ -137,7 +139,13 @@ func readVersionHint(tableLocation string) (int, error) {
 }
 
 // writeVersionHint writes the current metadata version to version-hint.text.
+// The value is left-justified and space-padded to 64 bytes so that object
+// storage backends with a minimum file size (e.g. Volumez via FUSE) do not
+// silently discard the write. All standard Iceberg readers (DuckDB, PyIceberg,
+// Java) parse with trim/strip, so the padding is transparent to consumers.
 func writeVersionHint(tableLocation string, version int) error {
 	hintPath := filepath.Join(tableLocation, "metadata", "version-hint.text")
-	return os.WriteFile(hintPath, []byte(strconv.Itoa(version)), 0644)
+	const minSize = 64
+	content := fmt.Sprintf("%-*d", minSize, version)
+	return os.WriteFile(hintPath, []byte(content), 0644)
 }
