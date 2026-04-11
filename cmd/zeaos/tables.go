@@ -680,6 +680,9 @@ func (s *Session) ShowHist() {
 		if len(e.Ops) > 0 {
 			label += "  → " + strings.Join(e.Ops, " | ")
 		}
+		if e.SourceURI != "" {
+			label += "  ← " + e.SourceURI
+		}
 		node := tview.NewTreeNode(label).SetColor(tcell.ColorGreen)
 		parent.AddChild(node)
 		for childName, childEntry := range s.Registry {

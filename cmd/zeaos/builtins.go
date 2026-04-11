@@ -145,12 +145,15 @@ func execSQL(cmd *Cmd, s *Session) error {
 	upper := strings.ToUpper(cmd.RawSQL)
 	needsTable := strings.Contains(upper, "GROUP BY") || strings.Contains(upper, "PIVOT")
 
+	parent := inferSQLParent(cmd.RawSQL, srcs)
+	ops := sqlOps(cmd.RawSQL)
+
 	var entry *TableEntry
 	var err error
 	if needsTable {
-		entry, err = s.materializeViaTable(cmd.Target, cmd.RawSQL, srcs, "", []string{"sql"})
+		entry, err = s.materializeViaTable(cmd.Target, cmd.RawSQL, srcs, parent, ops)
 	} else {
-		entry, err = s.materializeArrow(cmd.Target, cmd.RawSQL, srcs, "", []string{"sql"})
+		entry, err = s.materializeArrow(cmd.Target, cmd.RawSQL, srcs, parent, ops)
 	}
 	if err != nil {
 		return fmt.Errorf("sql: %w", err)
@@ -759,4 +762,60 @@ func execOSPipe(line string, s *Session) error {
 	c := exec.Command("sh", "-c", line)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// inferSQLParent returns the first session table name found as a whole word in
+// the SQL string. Used to set the Parent field on SQL-derived tables so the
+// lineage tree reflects the actual derivation chain.
+// inferSQLParent returns the first session table name found as a whole word in
+// the SQL string. Used to set the Parent field on SQL-derived tables so the
+// lineage tree reflects the actual derivation chain.
+func inferSQLParent(sql string, tableNames []string) string {
+	upper := strings.ToUpper(sql)
+	for _, name := range tableNames {
+		upperName := strings.ToUpper(name)
+		search := upper
+		for {
+			idx := strings.Index(search, upperName)
+			if idx < 0 {
+				break
+			}
+			absIdx := len(upper) - len(search) + idx
+			before := absIdx == 0 || !isIdentChar(rune(upper[absIdx-1]))
+			end := absIdx + len(name)
+			after := end >= len(upper) || !isIdentChar(rune(upper[end]))
+			if before && after {
+				return name
+			}
+			search = search[idx+1:]
+		}
+	}
+	return ""
+}
+
+// sqlOps returns a descriptive Ops slice for a SQL-derived table. Detects
+// iceberg_scan so the lineage label is more informative than just "sql".
+func sqlOps(sql string) []string {
+	upper := strings.ToUpper(sql)
+	if idx := strings.Index(upper, "ICEBERG_SCAN("); idx >= 0 {
+		// Extract the path argument from iceberg_scan('...').
+		rest := sql[idx+len("iceberg_scan("):]
+		end := strings.IndexAny(rest, ")'\"")
+		if end > 0 {
+			path := strings.Trim(rest[:end], `'"`)
+			// Use just the last two path components to keep the label short.
+			parts := strings.Split(strings.TrimRight(path, "/"), "/")
+			short := path
+			if len(parts) >= 2 {
+				short = strings.Join(parts[len(parts)-2:], "/")
+			}
+			return []string{"iceberg_scan(" + short + ")"}
+		}
+	}
+	return []string{"sql"}
+}
+
+func isIdentChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '_'
 }
