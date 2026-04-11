@@ -39,6 +39,25 @@ func parseExportArgs(args []string) (format, output string, rest []string) {
 	return
 }
 
+// --- unpromote ---
+
+func execUnpromote(args []string, s *Session) error {
+	if len(args) == 0 {
+		return fmt.Errorf("unpromote: export name required (use 'list --type=promotions' to see them)")
+	}
+	var removed []string
+	for _, name := range args {
+		if _, ok := s.Promoted[name]; !ok {
+			return fmt.Errorf("unpromote: %q not found in promotions", name)
+		}
+		delete(s.Promoted, name)
+		removed = append(removed, name)
+	}
+	_ = s.saveRegistry()
+	fmt.Printf("unpromoted: %s\n", strings.Join(removed, ", "))
+	return nil
+}
+
 // --- promote ---
 
 func execPromote(args []string, s *Session) error {
@@ -72,7 +91,7 @@ func execPromote(args []string, s *Session) error {
 	}
 
 	if !isValidDbtName(exportName) {
-		return fmt.Errorf("promote: %q is not a valid dbt model name (lowercase, alphanumeric + underscores, start with letter)", exportName)
+		return fmt.Errorf("promote: %q is not a valid model name (lowercase, alphanumeric + underscores, must start with a letter)", exportName)
 	}
 
 	s.Promoted[exportName] = &PromotedArtifact{
@@ -113,6 +132,13 @@ func execListTables(s *Session) error {
 	for _, e := range s.Registry {
 		ops := strings.Join(e.Ops, " | ")
 		fmt.Printf("%-24s  %10d  %6d  %s\n", e.Name, e.RowCount, e.ColCount, ops)
+	}
+	if len(s.Promoted) > 0 {
+		names := make([]string, 0, len(s.Promoted))
+		for name := range s.Promoted {
+			names = append(names, name)
+		}
+		fmt.Printf("\nPromotions: %s  (run 'list --type=promotions' for details)\n", strings.Join(names, ", "))
 	}
 	return nil
 }
@@ -184,7 +210,7 @@ func validateArtifact(exportName string, s *Session) error {
 	if execErr != nil {
 		msg := execErr.Error()
 		if strings.Contains(msg, "Catalog Error") || strings.Contains(msg, "Table with name") {
-			fmt.Printf("  ✓ SQL structure valid (source refs resolve at dbt runtime)\n")
+			fmt.Printf("  ✓ SQL structure valid (source refs resolve at export runtime)\n")
 		} else {
 			fmt.Printf("  ✗ SQL does not parse: %v\n", execErr)
 		}
@@ -213,7 +239,7 @@ func validateArtifact(exportName string, s *Session) error {
 		portable = false
 	}
 	if portable {
-		fmt.Printf("  ✓ portable: duckdb dialect, no non-standard functions detected\n")
+		fmt.Printf("  ✓ portable: standard SQL, no non-standard functions detected\n")
 	}
 
 	return nil

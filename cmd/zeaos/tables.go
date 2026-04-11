@@ -103,10 +103,17 @@ func NewSession() (*Session, error) {
 	// Install and load DuckDB extensions. INSTALL is a no-op if already
 	// present; both steps are non-fatal so a missing network or unsupported
 	// platform does not prevent ZeaOS from starting.
-	for _, ext := range []string{"iceberg"} {
+	for _, ext := range []string{"iceberg", "httpfs"} {
 		_, _ = arrowConn.ExecContext(ctx, "INSTALL "+ext)
 		_, _ = arrowConn.ExecContext(ctx, "LOAD "+ext)
 	}
+
+	// Configure S3/httpfs settings from the ZeaDrive config so that s3:// URIs
+	// work in DuckDB queries when operating in SDK mode (no FUSE mount).
+	drive := NewDriveManager(dir)
+	drive.ConfigureHTTPFS(ctx, func(stmt string) {
+		_, _ = arrowConn.ExecContext(ctx, stmt)
+	})
 
 	s := &Session{
 		Dir:       dir,
@@ -116,7 +123,7 @@ func NewSession() (*Session, error) {
 		db:        db,
 		arrowConn: arrowConn,
 		arrow:     ar,
-		Drive:     NewDriveManager(dir),
+		Drive:     drive,
 	}
 	_ = s.loadRegistry() // non-fatal: start fresh if no prior session
 	return s, nil

@@ -1,10 +1,10 @@
 ---
-title: "Publishing NYC Taxi Analysis to dbt via GitHub"
+title: "Publishing NYC Taxi Analysis as Data Models via GitHub"
 ---
 
-# Publishing NYC Taxi Analysis to dbt via GitHub
+# Publishing NYC Taxi Analysis as Data Models via GitHub
 
-*This tutorial picks up from the [NYC Taxi Analysis](tutorial-nyc-taxi) walkthrough and takes it all the way to a running dbt project. By the end you will have promoted the session's key analytical tables, published a dbt Core project to GitHub, cloned it, and run `dbt run` to materialise the models — no warehouse, no cloud account, no data loading required.*
+*This tutorial picks up from the [NYC Taxi Analysis](tutorial-nyc-taxi) walkthrough and takes it all the way to a running dbt project. By the end you will have promoted the session's key analytical tables as named model artifacts, published a dbt Core project to GitHub, cloned it, and run `dbt run` to materialise the models — no warehouse, no cloud account, no data loading required.*
 
 ---
 
@@ -47,7 +47,7 @@ Then from inside any ZeaOS session:
 ZeaOS> zearun taxi-dbt-publish --repo lmccay/nyc-taxi-dbt --new
 ```
 
-That single command loads the taxi data, builds the analysis tables, promotes and validates two dbt models, and publishes the bundle to GitHub. Skip to [Running in dbt](#running-in-dbt) to see what happens next.
+That single command loads the taxi data, builds the analysis tables, promotes and validates two model artifacts, and publishes the bundle to GitHub. Skip to [Running in dbt](#running-in-dbt) to see what happens next.
 
 The rest of this tutorial walks through each step manually.
 
@@ -55,7 +55,7 @@ The rest of this tutorial walks through each step manually.
 
 ## Step 1 — Decide What to Promote
 
-Not every session table belongs in a dbt project:
+Not every session table belongs in a published model bundle:
 
 - **Promote** finished analytical views — the tables a downstream consumer would actually query.
 - **Skip** intermediate tables (`long_trips`, `zone_payment`) — these are captured as `{{ source() }}` or `{{ ref() }}` references inside the promoted models.
@@ -63,7 +63,7 @@ Not every session table belongs in a dbt project:
 
 For the taxi analysis:
 
-| Session table | Export name | Why |
+| Session table | Model name | Why |
 |---|---|---|
 | `zone_revenue` | `zone_revenue_by_pickup` | Revenue analysis by pickup zone |
 | `avg_tip` | `avg_tip_by_payment` | Tip behaviour by payment type |
@@ -74,47 +74,49 @@ For the taxi analysis:
 ## Step 2 — Promote
 
 ```
-ZeaOS> promote zone_revenue as zone_revenue_by_pickup model
+ZeaOS> model promote zone_revenue as zone_revenue_by_pickup model
 promoted zone_revenue → zone_revenue_by_pickup (model)
 
-ZeaOS> promote avg_tip as avg_tip_by_payment model
+ZeaOS> model promote avg_tip as avg_tip_by_payment model
 promoted avg_tip → avg_tip_by_payment (model)
 
-ZeaOS> promote payment_pivot as payment_mix_by_zone model
+ZeaOS> model promote payment_pivot as payment_mix_by_zone model
 promoted payment_pivot → payment_mix_by_zone (model)
 
-ZeaOS> list --type=promotions
+ZeaOS> model list
 Export Name               Kind        Source Table          Promoted At
 ────────────────────────────────────────────────────────────────────────
-zone_revenue_by_pickup    model       zone_revenue          2026-04-06 09:00:00
-avg_tip_by_payment        model       avg_tip               2026-04-06 09:00:01
-payment_mix_by_zone       model       payment_pivot         2026-04-06 09:00:02
+zone_revenue_by_pickup    model       zone_revenue          2026-04-11 09:00:00
+avg_tip_by_payment        model       avg_tip               2026-04-11 09:00:01
+payment_mix_by_zone       model       payment_pivot         2026-04-11 09:00:02
 ```
+
+Promotions persist across restarts. To remove one: `model unpromote <name>`.
 
 ---
 
 ## Step 3 — Validate
 
-`validate --target=dbt` checks SQL structure, row counts, source URIs, and portability before anything is pushed:
+`model validate` checks SQL structure, row counts, source URIs, and portability before anything is pushed:
 
 ```
-ZeaOS> validate zone_revenue_by_pickup --target=dbt
+ZeaOS> model validate zone_revenue_by_pickup
 Validating zone_revenue_by_pickup (from zone_revenue)...
-  ✓ SQL structure valid (source refs resolve at dbt runtime)
+  ✓ SQL structure valid (source refs resolve at export runtime)
   ✓ 254 rows × 4 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
-  ✓ portable: duckdb dialect, no non-standard functions detected
+  ✓ portable: standard SQL, no non-standard functions detected
 
-ZeaOS> validate avg_tip_by_payment --target=dbt
+ZeaOS> model validate avg_tip_by_payment
 Validating avg_tip_by_payment (from avg_tip)...
-  ✓ SQL structure valid (source refs resolve at dbt runtime)
+  ✓ SQL structure valid (source refs resolve at export runtime)
   ✓ 5 rows × 3 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
-  ✓ portable: duckdb dialect, no non-standard functions detected
+  ✓ portable: standard SQL, no non-standard functions detected
 
-ZeaOS> validate payment_mix_by_zone --target=dbt
+ZeaOS> model validate payment_mix_by_zone
 Validating payment_mix_by_zone (from payment_pivot)...
-  ✓ SQL structure valid (source refs resolve at dbt runtime)
+  ✓ SQL structure valid (source refs resolve at export runtime)
   ✓ 10 rows × 7 cols
   ✓ source URIs: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
   ⚠  PIVOT uses DuckDB-specific syntax — may not run on other adapters
@@ -129,7 +131,7 @@ The source URI check is what makes the dbt-DuckDB path work end-to-end. Because 
 If `gh` is already authenticated, no token setup is needed — ZeaOS picks it up automatically:
 
 ```
-ZeaOS> publish --repo lmccay/nyc-taxi-dbt --new
+ZeaOS> model publish --repo lmccay/nyc-taxi-dbt --new
 Generating export bundle...
   created models/zone_revenue_by_pickup.sql
   created models/zone_revenue_by_pickup.yml
@@ -145,7 +147,7 @@ Generating export bundle...
   created .gitignore
 Creating GitHub repo lmccay/nyc-taxi-dbt...
   created: https://github.com/lmccay/nyc-taxi-dbt
-commit: ZeaOS v0.2.0: initial export — zone_revenue_by_pickup, avg_tip_by_payment, payment_mix_by_zone
+commit: ZeaOS v1.0.0: initial export — zone_revenue_by_pickup, avg_tip_by_payment, payment_mix_by_zone
 ✓ Published to https://github.com/lmccay/nyc-taxi-dbt
 ```
 
@@ -347,10 +349,10 @@ To be precise about the end-to-end flow:
 
 **Moving to a cloud warehouse** — when you're ready to run on BigQuery, Snowflake, or Redshift, the source data needs to land in the warehouse first (via Fivetran, Airbyte, or a custom load). Replace the `{{ source('zea_http', ...) }}` references with references to your warehouse sources. The transformation SQL stays the same.
 
-**Saving to a default repo** — set a default so you never need to type `--repo` again:
+**Saving a default repo** — set a default so you never need to type `--repo` again:
 
 ```
-ZeaOS> publish set-repo lmccay/nyc-taxi-dbt
+ZeaOS> model publish set-repo lmccay/nyc-taxi-dbt
 ```
 
 ---

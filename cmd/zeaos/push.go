@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
@@ -43,7 +44,7 @@ type pushArgs struct {
 }
 
 func parsePushArgs(args []string) (*pushArgs, error) {
-	pa := &pushArgs{Schema: "zea_exports"}
+	pa := &pushArgs{}
 
 	if len(args) == 0 {
 		return nil, fmt.Errorf("push: target required — e.g. push --target md:my_database\n" +
@@ -84,25 +85,18 @@ func parsePushArgs(args []string) (*pushArgs, error) {
 
 	if pa.Target == "" && pa.Subcommand != "status" {
 		cfg, _ := loadConfig()
-		if cfg != nil && cfg.Push.DefaultTarget != "" {
-			pa.Target = cfg.Push.DefaultTarget
+		if cfg != nil {
+			if cfg.Push.DefaultTarget != "" {
+				pa.Target = cfg.Push.DefaultTarget
+			}
+			if pa.Schema == "" && cfg.Push.DefaultSchema != "" {
+				pa.Schema = cfg.Push.DefaultSchema
+			}
 		}
 	}
 
 	if pa.Target == "" && pa.Subcommand != "status" {
 		return nil, fmt.Errorf("push: --target required (or set a default with push --target md:db --set-default)")
-	}
-
-	// Save as default if first explicit use.
-	if pa.Target != "" {
-		cfg, _ := loadConfig()
-		if cfg == nil {
-			cfg = &zeaosConfig{}
-		}
-		if cfg.Push.DefaultTarget != pa.Target {
-			cfg.Push.DefaultTarget = pa.Target
-			_ = saveConfig(cfg)
-		}
 	}
 
 	return pa, nil
@@ -141,6 +135,13 @@ func execPushData(pa *pushArgs, s *Session) error {
 		return fmt.Errorf("push: no tables to push — promote tables first or specify names explicitly")
 	}
 
+	// Prompt for warehouse path extension and/or schema if not yet configured.
+	if pa.Schema == "" {
+		if err := promptWarehouseSchema(pa); err != nil {
+			return err
+		}
+	}
+
 	target, err := openPushTarget(pa, s)
 	if err != nil {
 		return err
@@ -168,6 +169,23 @@ func execPushData(pa *pushArgs, s *Session) error {
 
 	if !pa.DryRun {
 		_ = s.saveRegistry()
+		// Persist target and schema so subsequent pushes don't re-prompt.
+		cfg, _ := loadConfig()
+		if cfg == nil {
+			cfg = &zeaosConfig{}
+		}
+		changed := false
+		if cfg.Push.DefaultTarget != pa.Target {
+			cfg.Push.DefaultTarget = pa.Target
+			changed = true
+		}
+		if pa.Schema != "" && cfg.Push.DefaultSchema != pa.Schema {
+			cfg.Push.DefaultSchema = pa.Schema
+			changed = true
+		}
+		if changed {
+			_ = saveConfig(cfg)
+		}
 		fmt.Printf("Push complete. Run 'push status' to review.\n")
 
 		// Update the staging macro in the published dbt repo when pushing to
@@ -193,10 +211,9 @@ func execPushData(pa *pushArgs, s *Session) error {
 }
 
 // resolvePushTables returns the session tables to push.
-//
-//  1. Explicit names on the command line — push exactly those.
-//  2. Promotions present — push source (load-node) tables from their lineage.
-//  3. No promotions — push all session tables not prefixed with "_".
+// Explicit table names on the command line take priority; otherwise all
+// non-internal session tables are pushed. To push only the source data for
+// promoted models, use 'model push' instead.
 func resolvePushTables(pa *pushArgs, s *Session) ([]*TableEntry, error) {
 	if len(pa.Tables) > 0 {
 		var out []*TableEntry
@@ -210,26 +227,7 @@ func resolvePushTables(pa *pushArgs, s *Session) ([]*TableEntry, error) {
 		return out, nil
 	}
 
-	// Collect source (load-node) tables from promoted artifact lineage.
-	seen := map[string]bool{}
 	var out []*TableEntry
-	for _, art := range s.Promoted {
-		chain, err := walkLineage(s, art.PromotedFrom)
-		if err != nil {
-			continue
-		}
-		for _, node := range chain.Nodes {
-			if node.NodeKind == "load" && !seen[node.Entry.Name] {
-				seen[node.Entry.Name] = true
-				out = append(out, node.Entry)
-			}
-		}
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-
-	// No promotions — fall back to all non-internal session tables.
 	for _, entry := range s.Registry {
 		if !strings.HasPrefix(entry.Name, "_") {
 			out = append(out, entry)
@@ -243,21 +241,49 @@ func resolvePushTables(pa *pushArgs, s *Session) ([]*TableEntry, error) {
 // ---------------------------------------------------------------------------
 
 func execPushStatus(s *Session) error {
-	any := false
-	fmt.Printf("%-24s  %-32s  %-20s  %s\n", "Table", "Target", "Pushed At", "Rows")
-	fmt.Println(strings.Repeat("─", 90))
+	type row struct {
+		table, target, pushedAt, format, rows string
+	}
+	var rows []row
 	for _, entry := range s.Registry {
 		for _, rec := range entry.PushRecords {
-			any = true
-			fmt.Printf("%-24s  %-32s  %-20s  %d\n",
-				entry.Name,
-				rec.Target+"/"+rec.Schema+"."+rec.TableName,
-				rec.PushedAt.Format("2006-01-02 15:04:05"),
-				rec.RowCount)
+			format := rec.Format
+			if format == "" {
+				format = "parquet"
+			}
+			rows = append(rows, row{
+				table:    entry.Name,
+				target:   rec.Target + "/" + rec.Schema + "." + rec.TableName,
+				pushedAt: rec.PushedAt.Format("2006-01-02 15:04:05"),
+				format:   format,
+				rows:     fmt.Sprintf("%d", rec.RowCount),
+			})
 		}
 	}
-	if !any {
+	if len(rows) == 0 {
 		fmt.Println("No push history. Use 'push --target md:database' to push session tables.")
+		return nil
+	}
+
+	// Compute column widths from data.
+	w := [4]int{5, 6, 19, 6} // minimums: Table, Target, Pushed At, Format
+	for _, r := range rows {
+		if len(r.table) > w[0] {
+			w[0] = len(r.table)
+		}
+		if len(r.target) > w[1] {
+			w[1] = len(r.target)
+		}
+		if len(r.format) > w[3] {
+			w[3] = len(r.format)
+		}
+	}
+
+	sep := strings.Repeat("─", w[0]+w[1]+w[2]+w[3]+14)
+	fmt.Printf("%-*s  %-*s  %-*s  %-*s  %s\n", w[0], "Table", w[1], "Target", w[2], "Pushed At", w[3], "Format", "Rows")
+	fmt.Println(sep)
+	for _, r := range rows {
+		fmt.Printf("%-*s  %-*s  %-*s  %-*s  %s\n", w[0], r.table, w[1], r.target, w[2], r.pushedAt, w[3], r.format, r.rows)
 	}
 	return nil
 }
@@ -313,6 +339,64 @@ func execPushSync(pa *pushArgs, s *Session) error {
 		_ = s.saveRegistry()
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Interactive warehouse/schema prompt
+// ---------------------------------------------------------------------------
+
+// promptWarehouseSchema interactively collects a schema (and, for ZeaDrive
+// targets, an optional warehouse path prefix) when neither was provided on the
+// CLI nor found in config. It may extend pa.Target with a warehouse segment and
+// always sets pa.Schema before returning.
+func promptWarehouseSchema(pa *pushArgs) error {
+	reader := bufio.NewReader(os.Stdin)
+	isZeaDrive := strings.HasPrefix(pa.Target, "zea://")
+
+	warehouse := ""
+	schema := "default"
+
+	for {
+		fmt.Printf("Push to: %s [Y/n] ", pushPreview(pa.Target, warehouse, schema))
+		line, _ := reader.ReadString('\n')
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "", "y":
+			if isZeaDrive && warehouse != "" {
+				pa.Target = strings.TrimRight(pa.Target, "/") + "/" + warehouse
+			}
+			pa.Schema = schema
+			return nil
+		case "n":
+			if isZeaDrive {
+				fmt.Print("  Warehouse prefix (e.g. 'iceberg', 'prod') [none]: ")
+				w, _ := reader.ReadString('\n')
+				warehouse = strings.TrimSpace(w)
+			}
+			fmt.Printf("  Schema [%s]: ", schema)
+			s, _ := reader.ReadString('\n')
+			if v := strings.TrimSpace(s); v != "" {
+				schema = v
+			}
+		default:
+			fmt.Println("  Please enter Y or n.")
+		}
+	}
+}
+
+// pushPreview formats the destination path for display in the prompt.
+func pushPreview(target, warehouse, schema string) string {
+	if strings.HasPrefix(target, "md:") {
+		db := strings.TrimPrefix(target, "md:")
+		if db == "" {
+			db = "my_db"
+		}
+		return db + "." + schema
+	}
+	base := strings.TrimRight(target, "/")
+	if warehouse != "" {
+		base += "/" + warehouse
+	}
+	return base + "/" + schema
 }
 
 // ---------------------------------------------------------------------------
@@ -547,8 +631,14 @@ func openZeaDriveTarget(target string, iceberg bool, s *Session) (*zeaDriveTarge
 	if err := s.Drive.EnsureCloudMount(); err != nil {
 		return nil, fmt.Errorf("push: ZeaDrive not available: %w", err)
 	}
+	// If FUSE is not mounted, SDK mode is implied — EnsureCloudMount already
+	// returned nil. Check that we at least have an S3 backend configured so
+	// the expanded path will be resolvable.
 	if !s.Drive.IsMounted() {
-		return nil, fmt.Errorf("push: ZeaDrive is not mounted — run 'zeadrive mount' first")
+		expanded := s.Drive.ExpandPath(target)
+		if !s.Drive.IsS3Path(expanded) {
+			return nil, fmt.Errorf("push: ZeaDrive is not mounted and no S3 backend matches %q — run 'zeadrive mount' or 'enable-s3'", target)
+		}
 	}
 
 	// Find the matching mount config for S3 URI derivation.
@@ -607,11 +697,22 @@ func (t *zeaDriveTarget) pushParquet(entry *TableEntry, schema, s3URI string) (*
 	destZeaPath := t.zeaPath + "/" + schema + "/" + entry.Name + ".parquet"
 	destFSPath := t.drive.ExpandPath(destZeaPath)
 
-	if err := os.MkdirAll(filepath.Dir(destFSPath), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir: %w", err)
-	}
-	if err := streamCopyWithProgress(entry.FilePath, destFSPath, entry.Name); err != nil {
-		return nil, fmt.Errorf("copy to ZeaDrive: %w", err)
+	if t.drive.IsS3Path(destFSPath) {
+		// SDK mode: upload via S3 SDK directly.
+		data, err := os.ReadFile(entry.FilePath)
+		if err != nil {
+			return nil, fmt.Errorf("read parquet: %w", err)
+		}
+		if err := t.drive.WriteFile(destZeaPath, data); err != nil {
+			return nil, fmt.Errorf("upload to S3: %w", err)
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(destFSPath), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir: %w", err)
+		}
+		if err := streamCopyWithProgress(entry.FilePath, destFSPath, entry.Name); err != nil {
+			return nil, fmt.Errorf("copy to ZeaDrive: %w", err)
+		}
 	}
 	return &PushRecord{
 		Target:    t.zeaPath,
@@ -651,11 +752,26 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	dataFSPath := t.drive.ExpandPath(dataZeaPath)
 
 	var tbl *zeaberg.Table
-	tbl, err = zeaberg.CreateTable(stagingDir, arrowSchema,
-		zeaberg.WithCanonicalLocation(tableFSPath),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("iceberg create (staging): %w", err)
+	if icebergTableExists(tableFSPath, t.drive) {
+		// Append mode: stage existing metadata locally so zeaberg can open the
+		// table, then append a new snapshot rather than recreating it.
+		if err := os.MkdirAll(filepath.Join(stagingDir, "metadata"), 0o755); err != nil {
+			return nil, fmt.Errorf("create staging metadata dir: %w", err)
+		}
+		if err := stageExistingIcebergMetadata(stagingDir, tableFSPath, t.drive); err != nil {
+			return nil, fmt.Errorf("stage existing iceberg metadata: %w", err)
+		}
+		tbl, err = zeaberg.OpenTable(stagingDir)
+		if err != nil {
+			return nil, fmt.Errorf("iceberg open (staging): %w", err)
+		}
+	} else {
+		tbl, err = zeaberg.CreateTable(stagingDir, arrowSchema,
+			zeaberg.WithCanonicalLocation(tableFSPath),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("iceberg create (staging): %w", err)
+		}
 	}
 
 	// Rewrite the Parquet file with Iceberg field IDs embedded before registering
@@ -689,11 +805,22 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	}
 
 	// Stream the rewritten Parquet data file to its registered path on ZeaDrive.
-	if err := os.MkdirAll(filepath.Dir(dataFSPath), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir data: %w", err)
-	}
-	if err := streamCopyWithProgress(rewrittenParquet, dataFSPath, entry.Name); err != nil {
-		return nil, fmt.Errorf("stream parquet to ZeaDrive: %w", err)
+	if t.drive.IsS3Path(dataFSPath) {
+		// SDK mode: read and upload via S3 SDK.
+		data, err := os.ReadFile(rewrittenParquet)
+		if err != nil {
+			return nil, fmt.Errorf("read rewritten parquet: %w", err)
+		}
+		if err := t.drive.WriteFile(dataZeaPath, data); err != nil {
+			return nil, fmt.Errorf("upload parquet to S3: %w", err)
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(dataFSPath), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir data: %w", err)
+		}
+		if err := streamCopyWithProgress(rewrittenParquet, dataFSPath, entry.Name); err != nil {
+			return nil, fmt.Errorf("stream parquet to ZeaDrive: %w", err)
+		}
 	}
 
 	return &PushRecord{
@@ -708,6 +835,51 @@ func (t *zeaDriveTarget) pushIceberg(entry *TableEntry, schema, s3URI string, s 
 	}, nil
 }
 
+
+// icebergTableExists reports whether an Iceberg table already exists at tableFSPath.
+// In SDK mode tableFSPath is an s3:// URI; in FUSE/local mode it is a filesystem path.
+func icebergTableExists(tableFSPath string, drive *DriveManager) bool {
+	if drive.IsS3Path(tableFSPath) {
+		_, err := drive.ReadS3Path(tableFSPath + "/metadata/version-hint.text")
+		return err == nil
+	}
+	_, err := os.Stat(filepath.Join(tableFSPath, "metadata", "version-hint.text"))
+	return err == nil
+}
+
+// stageExistingIcebergMetadata downloads version-hint.text and the current
+// metadata JSON from an existing Iceberg table into stagingDir so that
+// zeaberg.OpenTable can read the table state from local files.
+func stageExistingIcebergMetadata(stagingDir, tableFSPath string, drive *DriveManager) error {
+	readFile := func(remotePath string) ([]byte, error) {
+		if drive.IsS3Path(tableFSPath) {
+			return drive.ReadS3Path(remotePath)
+		}
+		return os.ReadFile(remotePath)
+	}
+	remotePath := func(rel string) string {
+		if drive.IsS3Path(tableFSPath) {
+			return tableFSPath + "/" + rel
+		}
+		return filepath.Join(tableFSPath, filepath.FromSlash(rel))
+	}
+
+	hintData, err := readFile(remotePath("metadata/version-hint.text"))
+	if err != nil {
+		return fmt.Errorf("read version-hint.text: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, "metadata", "version-hint.text"), hintData, 0644); err != nil {
+		return err
+	}
+
+	versionStr := strings.TrimSpace(string(hintData))
+	metaFile := "v" + versionStr + ".metadata.json"
+	metaData, err := readFile(remotePath("metadata/" + metaFile))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", metaFile, err)
+	}
+	return os.WriteFile(filepath.Join(stagingDir, "metadata", metaFile), metaData, 0644)
+}
 
 // buildLineageInfo constructs a zeaberg.LineageInfo from the session entry's
 // lineage chain, embedding provenance that travels with the Iceberg snapshot.

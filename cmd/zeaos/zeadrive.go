@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,23 +62,48 @@ func NewDriveManager(zeaosDir string) *DriveManager {
 	return d
 }
 
-// ExpandPath resolves a zea:// URL to an absolute filesystem path.
+// ExpandPath resolves a zea:// URL.
 //
 // Routing rules:
 //   zea://              → LocalPath/
-//   zea://<backend>/..  → MountPath/<backend>/...   if <backend> is a configured Volumez mount
+//   zea://<backend>/..  → MountPath/<backend>/...   if FUSE is mounted
+//   zea://<backend>/..  → s3://bucket/prefix/...    if backend is S3 but FUSE not mounted (SDK mode)
 //   zea://<other>/...   → LocalPath/<other>/...
 func (d *DriveManager) ExpandPath(path string) string {
 	rest, ok := strings.CutPrefix(path, "zea://")
 	if !ok {
 		return path
 	}
-	// Determine the first path segment to check against configured backends.
-	seg := strings.SplitN(rest, "/", 2)[0]
-	if seg != "" && d.isBackend(seg) {
-		return filepath.Join(d.MountPath, rest)
+	mount, subPath := d.mountAndSubpathForZeaPath(path)
+	if mount != nil && mount.Backend == "s3" {
+		if d.IsMounted() {
+			return filepath.Join(d.MountPath, rest)
+		}
+		// FUSE not available — return an s3:// URI for DuckDB httpfs / SDK writes.
+		return d.s3URL(mount, subPath)
 	}
 	return filepath.Join(d.LocalPath, rest)
+}
+
+// s3URL builds an s3:// URI from a mount config and the sub-path within it.
+func (d *DriveManager) s3URL(mount *volMount, subPath string) string {
+	bucket, _ := mount.Config["bucket"].(string)
+	prefix, _ := mount.Config["prefix"].(string)
+	key := strings.TrimPrefix(
+		strings.ReplaceAll(prefix+"/"+subPath, "//", "/"), "/")
+	if bucket == "" {
+		return "s3:///" + key
+	}
+	if key == "" {
+		return "s3://" + bucket + "/"
+	}
+	return "s3://" + bucket + "/" + key
+}
+
+// IsS3Path returns true if the given path is an s3:// URI produced by ExpandPath
+// when SDK mode is active. Callers use this to skip FUSE checks and filesystem ops.
+func (d *DriveManager) IsS3Path(path string) bool {
+	return strings.HasPrefix(path, "s3://")
 }
 
 // isBackend returns true if name matches a mount path in volumez.json.
@@ -126,14 +152,39 @@ func (d *DriveManager) Label() string {
 	if d.IsMounted() {
 		return "~/zeadrive [mounted]"
 	}
+	if d.hasS3Config() {
+		if _, err := exec.LookPath("volumez"); err != nil {
+			return "~/zeadrive [sdk — no mount]"
+		}
+	}
 	return "~/zeadrive [not mounted]"
+}
+
+// hasS3Config returns true if any S3 backend is configured.
+func (d *DriveManager) hasS3Config() bool {
+	cfg, err := d.loadConfig()
+	if err != nil || cfg == nil {
+		return false
+	}
+	for _, m := range cfg.Mounts {
+		if m.Backend == "s3" {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureCloudMount lazily starts Volumez the first time a cloud backend path
 // is accessed. No-op if already mounted or no config exists.
+// If Volumez is not installed but an S3 config exists, the SDK path is used
+// instead (no error — callers check IsS3Path on the expanded path).
 func (d *DriveManager) EnsureCloudMount() error {
 	if _, err := os.Stat(d.ConfigPath); os.IsNotExist(err) {
 		return fmt.Errorf("no ZeaDrive cloud config found — run 'zeadrive enable-s3' to configure")
+	}
+	// If Volumez is not installed, fall back to SDK mode silently.
+	if _, err := exec.LookPath("volumez"); err != nil {
+		return nil // SDK mode: ExpandPath already returned s3://, no mount needed
 	}
 	if d.isStale() {
 		if err := d.forceUnmount(); err != nil {
@@ -249,11 +300,16 @@ func (d *DriveManager) execStatus() error {
 		fmt.Printf("Drive:  %s  [not mounted]\n", d.MountPath)
 	}
 	if cfg != nil && len(cfg.Mounts) > 0 {
+		_, noFUSE := exec.LookPath("volumez")
 		fmt.Println("Backends:")
 		for _, m := range cfg.Mounts {
 			name := strings.TrimPrefix(m.Path, "/")
 			bucket, _ := m.Config["bucket"].(string)
-			fmt.Printf("  zea://%s/  → %s  (bucket: %s)\n", name, m.Backend, bucket)
+			mode := "fuse"
+			if m.Backend == "s3" && noFUSE != nil {
+				mode = "sdk"
+			}
+			fmt.Printf("  zea://%s/  → %s  (bucket: %s)  [%s]\n", name, m.Backend, bucket, mode)
 		}
 	} else {
 		fmt.Println("No cloud backends configured. Run 'zeadrive enable-s3' to add one.")
@@ -418,13 +474,9 @@ func (d *DriveManager) execEnableS3() error {
 }
 
 // WriteFile writes data to a zea:// path. For S3-backed mounts it uses the AWS
-// SDK to PUT the object directly, bypassing FUSE (which silently drops small
-// writes on some backends). For local mounts it falls back to os.WriteFile.
-// Requires ZeaDrive to be mounted.
+// SDK to PUT the object directly, bypassing FUSE entirely. Works in SDK mode
+// (no Volumez/FUSE required). For local paths it falls back to os.WriteFile.
 func (d *DriveManager) WriteFile(zeaPath string, data []byte) error {
-	if !d.IsMounted() {
-		return fmt.Errorf("ZeaDrive is not mounted — run 'zeadrive mount' first")
-	}
 	mount, subPath := d.mountAndSubpathForZeaPath(zeaPath)
 	if mount != nil && mount.Backend == "s3" {
 		return d.s3PutObject(mount, subPath, data)
@@ -499,6 +551,69 @@ func (d *DriveManager) mountAndSubpathForZeaPath(zeaPath string) (*volMount, str
 	return nil, subPath
 }
 
+// ReadS3Path downloads an s3:// URI using the first mount config whose bucket
+// matches. Used by verify and other consumers that receive an expanded s3:// path
+// and need to read the bytes without a FUSE mount.
+func (d *DriveManager) ReadS3Path(s3URI string) ([]byte, error) {
+	// Parse s3://bucket/key
+	rest := strings.TrimPrefix(s3URI, "s3://")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid s3 URI: %s", s3URI)
+	}
+	bucket, key := parts[0], parts[1]
+
+	cfg, err := d.loadConfig()
+	if err != nil || cfg == nil {
+		return nil, fmt.Errorf("no ZeaDrive config for S3 read")
+	}
+	// Find the mount whose bucket matches to inherit region/endpoint settings.
+	var mount *volMount
+	for i := range cfg.Mounts {
+		b, _ := cfg.Mounts[i].Config["bucket"].(string)
+		if b == bucket {
+			mount = &cfg.Mounts[i]
+			break
+		}
+	}
+	if mount == nil {
+		// No matching mount — try a default AWS config.
+		mount = &volMount{Config: map[string]interface{}{"bucket": bucket, "region": "us-east-1"}}
+	}
+	return d.s3GetObject(mount, key)
+}
+
+// s3GetObject downloads an S3 object using the mount's region/endpoint config.
+func (d *DriveManager) s3GetObject(mount *volMount, key string) ([]byte, error) {
+	bucket, _ := mount.Config["bucket"].(string)
+	region, _ := mount.Config["region"].(string)
+	endpoint, _ := mount.Config["endpoint"].(string)
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	ctx := context.Background()
+	awscfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("s3 get: load config: %w", err)
+	}
+	client := s3.NewFromConfig(awscfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true
+		}
+	})
+	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
 // s3PutObject writes data directly to S3, bypassing FUSE.
 func (d *DriveManager) s3PutObject(mount *volMount, subPath string, data []byte) error {
 	bucket, _ := mount.Config["bucket"].(string)
@@ -532,6 +647,43 @@ func (d *DriveManager) s3PutObject(mount *volMount, subPath string, data []byte)
 		Body:   bytes.NewReader(data),
 	})
 	return err
+}
+
+// ConfigureHTTPFS emits DuckDB SET statements so that s3:// URIs produced by
+// ExpandPath resolve correctly via the httpfs extension. Called once at session
+// init. Only runs when an S3 backend is configured; no-op otherwise.
+// Uses the first configured S3 mount's region and endpoint settings.
+func (d *DriveManager) ConfigureHTTPFS(ctx context.Context, exec func(string)) {
+	cfg, err := d.loadConfig()
+	if err != nil || cfg == nil {
+		return
+	}
+	var s3mount *volMount
+	for i := range cfg.Mounts {
+		if cfg.Mounts[i].Backend == "s3" {
+			s3mount = &cfg.Mounts[i]
+			break
+		}
+	}
+	if s3mount == nil {
+		return
+	}
+	region, _ := s3mount.Config["region"].(string)
+	endpoint, _ := s3mount.Config["endpoint"].(string)
+	if region == "" {
+		region = "us-east-1"
+	}
+	// httpfs is already loaded at session init; just configure S3 settings.
+	exec(fmt.Sprintf("SET s3_region='%s'", region))
+	if endpoint != "" {
+		// Strip scheme — DuckDB httpfs expects host:port only.
+		ep := strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")
+		exec(fmt.Sprintf("SET s3_endpoint='%s'", ep))
+		exec("SET s3_url_style='path'")
+		if strings.HasPrefix(endpoint, "http://") {
+			exec("SET s3_use_ssl=false")
+		}
+	}
 }
 
 // awsCredentialsExist returns true if ~/.aws/credentials exists.

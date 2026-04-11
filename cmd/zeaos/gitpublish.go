@@ -32,6 +32,7 @@ type zeaosConfig struct {
 	} `json:"github,omitempty"`
 	Push struct {
 		DefaultTarget string `json:"default_target,omitempty"`
+		DefaultSchema string `json:"default_schema,omitempty"`
 	} `json:"push,omitempty"`
 }
 

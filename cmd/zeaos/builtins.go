@@ -63,6 +63,12 @@ func execLoad(cmd *Cmd, s *Session) error {
 	}
 
 	file = s.Drive.ExpandPath(file)
+
+	if s.Drive.IsS3Path(file) {
+		// SDK mode: DuckDB reads s3:// directly via httpfs (configured at session init).
+		return execLoadFile(cmd, s, file, filepath.Base(sourceURI), sourceURI)
+	}
+
 	// If the path routed to the FUSE mount, ensure Volumez is running.
 	if strings.HasPrefix(file, s.Drive.MountPath) {
 		if err := s.Drive.EnsureCloudMount(); err != nil {
@@ -300,22 +306,19 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execPluginManage(cmd.Args)
 	case "zeadrive":
 		return execZeadrive(cmd.Args, s)
-	case "promote":
-		return execPromote(cmd.Args, s)
+	case "model":
+		return execModel(cmd.Args, s)
 	case "list":
 		return execList(cmd.Args, s)
-	case "validate":
-		return execValidate(cmd.Args, s)
-	case "export":
-		return execExport(cmd.Args, s)
-	case "publish":
-		return execPublish(cmd.Args, s)
 	case "push":
 		return execPush(cmd.Args, s)
 	case "iceberg":
 		return execIceberg(cmd.Args, s)
 	case "enable-s3":
 		return s.Drive.execEnableS3()
+	case "version":
+		fmt.Printf("ZeaOS %s\n", version)
+		return nil
 	case "?", "help":
 		execHelp()
 		return nil
@@ -375,6 +378,41 @@ func execSave(name, dest string, s *Session) error {
 	}
 
 	path := s.Drive.ExpandPath(dest)
+
+	if s.Drive.IsS3Path(path) {
+		// SDK mode: spill to temp file then upload via S3 SDK.
+		ext := strings.ToLower(filepath.Ext(path))
+		if err := s.ensureSpilled(entry); err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		data, err := os.ReadFile(entry.FilePath)
+		if err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		if ext != ".parquet" {
+			// Non-Parquet: write to a local temp file via SaveTable, then upload.
+			tmp, err := os.CreateTemp("", "zeaos-save-*"+ext)
+			if err != nil {
+				return fmt.Errorf("save: %w", err)
+			}
+			tmpPath := tmp.Name()
+			tmp.Close()
+			defer os.Remove(tmpPath)
+			if err := s.SaveTable(entry, tmpPath, ext); err != nil {
+				return fmt.Errorf("save: %w", err)
+			}
+			data, err = os.ReadFile(tmpPath)
+			if err != nil {
+				return fmt.Errorf("save: %w", err)
+			}
+		}
+		if err := s.Drive.WriteFile(dest, data); err != nil {
+			return fmt.Errorf("save: %w", err)
+		}
+		fmt.Printf("saved %s → %s\n", name, dest)
+		return nil
+	}
+
 	if strings.HasPrefix(path, s.Drive.MountPath) {
 		if err := s.Drive.EnsureCloudMount(); err != nil {
 			return err
@@ -704,19 +742,28 @@ DRIVE
 
     t = load zea://s3-data/file.parquet  cloud file via mounted backend
 
-PROMOTE & EXPORT
-  promote <table> [as <name>] [model|semantic]
-                                     mark table for export promotion
-  list                               list session tables
-  list --type=promotions             list promoted artifacts
-  validate <name> --target=dbt       check portability for target
-  export [<name>] --target=dbt [-o DIR]
-                                     write export bundle (default dir: ./zea-dbt-export)
+MODEL
+  Define named model artifacts from session tables and publish them to
+  downstream tooling. Promotions persist across restarts.
+  Run 'model' with no arguments for full subcommand reference.
+
+  model promote <table> [as <name>] [model|semantic]
+                                     mark a table as a named model artifact
+  model unpromote <name>...          remove promotion(s)
+  model list                         list all promoted models
+  model validate [<name>]            check SQL portability for export
+  model export [-o DIR]              write model SQL + sources.yml bundle
+  model push --target <dest>         push source data for promoted models only
+  model publish [<name>]             publish model SQL to a Git repository
 
 PUSH
-  push --target md:database          push session tables to MotherDuck
-  push --target zea://backend/path   push to ZeaDrive as flat Parquet
-  push --target zea://... --iceberg  push as Apache Iceberg v2 table (ZeaDrive)
+  push all session tables to a destination (never affected by model promotions).
+  Use 'model push' to scope a push to promoted model source data only.
+
+  push --target md:database          push to MotherDuck
+  push --target zea://backend        push to ZeaDrive as flat Parquet
+  push --target zea://... --iceberg  push as Apache Iceberg v2 table
+  push <table> --target ...          push a specific table
   push status                        show push history
   push sync --target md:database     check for drift and re-push if stale
 
@@ -735,6 +782,7 @@ PLUGINS
   zeaplugin <name> --help            show help for a specific plugin
 
 OTHER
+  version                            show ZeaOS version
   exit / quit                        exit ZeaOS
   ?  or  help                        show this help
 
@@ -754,7 +802,13 @@ func execOSPipe(line string, s *Session) error {
 		parts := strings.Fields(line)
 		for i, p := range parts {
 			if strings.Contains(p, "zea://") {
-				parts[i] = s.Drive.ExpandPath(p)
+				expanded := s.Drive.ExpandPath(p)
+				if s.Drive.IsS3Path(expanded) {
+					fmt.Fprintf(os.Stderr, "zeadrive: shell commands require a FUSE mount — "+
+						"'%s' maps to %s which is not accessible as a filesystem path in SDK mode\n", p, expanded)
+					return nil
+				}
+				parts[i] = expanded
 			}
 		}
 		line = strings.Join(parts, " ")

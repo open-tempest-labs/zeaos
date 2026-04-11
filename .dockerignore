@@ -1,0 +1,20 @@
+# Build outputs
+zeaos
+*.test
+
+# Local data and session state
+~/.zeaos
+*.parquet
+*.duckdb
+*.db
+
+# macOS
+.DS_Store
+
+# Git
+.git
+
+# Editor
+.idea
+.vscode
+*.swp

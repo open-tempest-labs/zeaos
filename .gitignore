@@ -14,3 +14,13 @@
 .vscode/
 *.swp
 *.swo
+
+# Local data directory — user datasets, not project files
+/data/*
+!/data/.gitkeep
+!/data/README.md
+!/data/generate-sample-data.py
+
+# docker-compose local overrides and secrets
+.env
+docker-compose.override.yml

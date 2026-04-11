@@ -1,0 +1,83 @@
+services:
+
+  # ── Interactive ZeaOS REPL ────────────────────────────────────────────────
+  zeaos:
+    build:
+      context: .
+      target: runtime
+    stdin_open: true
+    tty: true
+    environment:
+      ZEA_TEST_S3_ENDPOINT: "http://minio:9000"
+      ZEA_TEST_S3_BUCKET: "${ZEA_S3_BUCKET:-zeaos-data}"
+      AWS_ACCESS_KEY_ID: "${MINIO_USER:-minioadmin}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_PASSWORD:-minioadmin}"
+      AWS_REGION: "us-east-1"
+    volumes:
+      # Host datasets — load /data/myfile.parquet from inside the REPL
+      - ${ZEA_DATA_DIR:-./data}:/data
+      # Session persistence across container restarts
+      - zeaos-session:/root/.zeaos
+    entrypoint: ["/bin/sh", "/usr/local/bin/zeaos-entrypoint.sh"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  # ── Unit + integration tests ─────────────────────────────────────────────
+  test:
+    build:
+      context: .
+      target: tester
+    command: ["/bin/sh", "/src/scripts/docker-entrypoint-test.sh"]
+    environment:
+      # MinIO endpoint — writes volumez.json so ZeaDrive SDK path uses MinIO
+      ZEA_TEST_S3_ENDPOINT: "http://minio:9000"
+      ZEA_TEST_S3_BUCKET: "zeaos-test"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AWS_REGION: "us-east-1"
+      # MotherDuck: set in .env or pass via `docker compose --env-file`
+      # MOTHERDUCK_TOKEN: "${MOTHERDUCK_TOKEN}"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - go-cache:/root/.cache/go-build
+      - gomod-cache:/go/pkg/mod
+
+  # ── MinIO — S3-compatible object store for push/Iceberg tests ────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the test bucket after MinIO starts
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/zeaos-data &&
+        mc mb --ignore-existing local/zeaos-test
+      "
+
+volumes:
+  minio-data:
+  zeaos-session:
+  go-cache:
+  gomod-cache:

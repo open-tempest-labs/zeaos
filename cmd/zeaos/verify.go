@@ -52,17 +52,39 @@ func verifyOne(nameOrPath string, s *Session) error {
 		displayName = nameOrPath + " → " + tableZeaPath
 	}
 
-	// Resolve zea:// data file paths registered in the manifest to local FUSE paths.
+	// SDK mode: zeaberg reads metadata via os.ReadFile / filepath.Join which
+	// cannot handle s3:// URIs. Stage the metadata files locally first.
+	verifyPath := metadataPath
+	var tmpDir string
+	if s.Drive.IsS3Path(metadataPath) {
+		var err error
+		tmpDir, err = stageIcebergMetadata(metadataPath, s.Drive)
+		if err != nil {
+			return fmt.Errorf("stage metadata from S3: %w", err)
+		}
+		defer os.RemoveAll(tmpDir)
+		verifyPath = tmpDir
+	}
+
 	opts := zeaberg.VerifyOptions{
 		DataFileResolver: func(p string) string {
+			// Resolve zea:// paths via ExpandPath (may produce s3:// in SDK mode).
 			if strings.HasPrefix(p, "zea://") {
-				return s.Drive.ExpandPath(p)
+				p = s.Drive.ExpandPath(p)
+			}
+			if s.Drive.IsS3Path(p) {
+				// Download to a temp file so zeaberg can hash it locally.
+				tmp := downloadS3ToTemp(p, s.Drive)
+				if tmp == "" {
+					return p // let zeaberg report missing
+				}
+				return tmp
 			}
 			return p
 		},
 	}
 
-	tableUUID, results, err := zeaberg.VerifyTable(metadataPath, opts)
+	tableUUID, results, err := zeaberg.VerifyTable(verifyPath, opts)
 	if err != nil {
 		return fmt.Errorf("read table at %s: %w", metadataPath, err)
 	}
@@ -171,6 +193,64 @@ func saveVerifyCache(sessionDir, tableUUID string, e verifyCacheEntry) error {
 		return err
 	}
 	return os.WriteFile(p, data, 0644)
+}
+
+// stageIcebergMetadata downloads the version-hint and metadata JSON from an
+// s3:// table location into a temp directory that zeaberg can read locally.
+func stageIcebergMetadata(s3TablePath string, drive *DriveManager) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "zeaos-verify-*")
+	if err != nil {
+		return "", err
+	}
+	metaDir := filepath.Join(tmpDir, "metadata")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+
+	hintURI := s3TablePath + "/metadata/version-hint.text"
+	hintData, err := drive.ReadS3Path(hintURI)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("read version-hint.text: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "version-hint.text"), hintData, 0644); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+
+	// Determine the metadata file version from the hint.
+	versionStr := strings.TrimSpace(string(hintData))
+	metaURI := s3TablePath + "/metadata/v" + versionStr + ".metadata.json"
+	metaData, err := drive.ReadS3Path(metaURI)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("read metadata json: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "v"+versionStr+".metadata.json"), metaData, 0644); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+	return tmpDir, nil
+}
+
+// downloadS3ToTemp downloads an S3 object to a temp file and returns its path.
+// The caller is responsible for deleting it. Returns "" on error.
+func downloadS3ToTemp(s3URI string, drive *DriveManager) string {
+	data, err := drive.ReadS3Path(s3URI)
+	if err != nil {
+		return ""
+	}
+	tmp, err := os.CreateTemp("", "zeaos-verify-data-*")
+	if err != nil {
+		return ""
+	}
+	defer tmp.Close()
+	if _, err := tmp.Write(data); err != nil {
+		os.Remove(tmp.Name())
+		return ""
+	}
+	return tmp.Name()
 }
 
 // resolveIcebergRecord returns the most recent Iceberg push record and its
