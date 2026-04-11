@@ -816,7 +816,8 @@ func sqlOps(sql string) []string {
 	upper := strings.ToUpper(sql)
 	if idx := strings.Index(upper, "ICEBERG_SCAN("); idx >= 0 {
 		// Extract the path argument from iceberg_scan('...').
-		rest := sql[idx+len("iceberg_scan("):]
+		// Strip the opening quote if present.
+		rest := strings.TrimLeft(sql[idx+len("iceberg_scan("):], `'"`)
 		end := strings.IndexAny(rest, ")'\"")
 		if end > 0 {
 			path := strings.Trim(rest[:end], `'"`)
