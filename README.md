@@ -39,11 +39,30 @@ Three things that typically require custom code or heavy infrastructure, now in 
 
 ## Quick Start
 
+**Option A — Native install (macOS)**
+
 ```sh
 brew tap open-tempest-labs/zeaos
 brew install zeaos
 zeaos
 ```
+
+**Option B — Docker Compose (macOS, Linux, Windows)**
+
+No install required. Spins up ZeaOS alongside a local MinIO instance for Iceberg push:
+
+```sh
+git clone https://github.com/open-tempest-labs/zeaos
+cd zeaos
+docker compose up -d minio minio-init
+docker compose run --rm zeaos
+```
+
+See [Getting Started with Docker](docs/getting-started-docker.md) for the full walkthrough.
+
+---
+
+Once you have a REPL prompt:
 
 ```
 ZeaOS> trips = load https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
