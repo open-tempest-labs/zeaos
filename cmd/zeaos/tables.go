@@ -592,15 +592,19 @@ func (s *Session) loadRegistry() error {
 
 	s.Registry = reg
 
-	// Back-fill missing Parent fields using stored SourceSQL. This repairs
-	// lineage for tables created before parent inference was introduced.
+	// Re-infer Parent and Ops from SourceSQL on every load. This repairs any
+	// previously persisted wrong values and ensures lineage stays correct as
+	// the inference logic improves.
 	tableNames := make([]string, 0, len(reg))
 	for name := range reg {
 		tableNames = append(tableNames, name)
 	}
 	for _, e := range reg {
-		if e.Parent == "" && e.SourceSQL != "" {
+		if e.SourceSQL != "" {
 			e.Parent = inferSQLParent(e.SourceSQL, tableNames)
+			if len(e.Ops) == 1 && e.Ops[0] == "sql" {
+				e.Ops = sqlOps(e.SourceSQL)
+			}
 		}
 	}
 
