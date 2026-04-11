@@ -356,10 +356,11 @@ make test
 
 ## Further Reading
 
-- [Writing DuckDB-compatible Iceberg tables: the spec compliance details nobody documents](docs/iceberg-compliance.md) *(coming soon)*
-- [From raw Parquet to MotherDuck in 3 commands](docs/motherduck-workflow.md) *(coming soon)*
-- [ZeaOS as your dbt source preparation layer](docs/dbt-workflow.md) *(coming soon)*
-- [Building an S3 Iceberg warehouse without Spark](docs/iceberg-warehouse.md) *(coming soon)*
+- [Getting Started with Docker and MinIO](docs/getting-started-docker.md)
+- [ZeaOS → dbt Export](docs/dbt-export.md)
+- [From Exploration to Production: Analysis That Knows Where It Came From](docs/whitepaper-exploration-to-production.md)
+- [Home Energy Monitoring with ZeaOS, MinIO, and Iceberg](docs/homelab-minio-iceberg.md)
+- [NYC Taxi Tutorial](docs/tutorial-nyc-taxi.md)
 
 ---
 
