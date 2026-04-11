@@ -767,27 +767,44 @@ func execOSPipe(line string, s *Session) error {
 // inferSQLParent returns the first session table name found as a whole word in
 // the SQL string. Used to set the Parent field on SQL-derived tables so the
 // lineage tree reflects the actual derivation chain.
-// inferSQLParent returns the first session table name found as a whole word in
-// the SQL string. Used to set the Parent field on SQL-derived tables so the
-// lineage tree reflects the actual derivation chain.
+// inferSQLParent returns the first session table name that appears immediately
+// after a FROM or JOIN keyword in the SQL. Restricting to FROM/JOIN prevents
+// false matches on column aliases (e.g. "COUNT(*) AS trips") and file paths
+// inside function calls (e.g. iceberg_scan('.../avg_tip')).
 func inferSQLParent(sql string, tableNames []string) string {
 	upper := strings.ToUpper(sql)
-	for _, name := range tableNames {
-		upperName := strings.ToUpper(name)
+
+	// Collect the token that follows each FROM/JOIN keyword.
+	candidates := []string{}
+	for _, kw := range []string{"FROM ", "JOIN "} {
 		search := upper
 		for {
-			idx := strings.Index(search, upperName)
+			idx := strings.Index(search, kw)
 			if idx < 0 {
 				break
 			}
-			absIdx := len(upper) - len(search) + idx
-			before := absIdx == 0 || !isIdentChar(rune(upper[absIdx-1]))
-			end := absIdx + len(name)
-			after := end >= len(upper) || !isIdentChar(rune(upper[end]))
-			if before && after {
-				return name
+			// Skip past the keyword and any whitespace.
+			rest := strings.TrimLeft(search[idx+len(kw):], " \t\n\r")
+			// Extract the next identifier token.
+			end := 0
+			for end < len(rest) && isIdentChar(rune(rest[end])) {
+				end++
+			}
+			if end > 0 {
+				candidates = append(candidates, rest[:end])
 			}
 			search = search[idx+1:]
+		}
+	}
+
+	// Return the first candidate that matches a known session table name.
+	nameSet := make(map[string]string, len(tableNames))
+	for _, n := range tableNames {
+		nameSet[strings.ToUpper(n)] = n
+	}
+	for _, c := range candidates {
+		if name, ok := nameSet[c]; ok {
+			return name
 		}
 	}
 	return ""
