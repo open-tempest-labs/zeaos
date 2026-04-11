@@ -140,13 +140,13 @@ ZeaOS can generate a dbt project bundle from promoted session tables — model S
 
 ### Promotions
 
-`promote` marks a session table as a named export artifact. There are two kinds:
+`model promote` marks a session table as a named export artifact. There are two kinds:
 - `model` — a dbt SQL model (the default)
 - `semantic` — a semantic layer metric or entity
 
 ```
-ZeaOS> promote avg_tip as avg_tip_by_payment model
-ZeaOS> list --type=promotions
+ZeaOS> model promote avg_tip as avg_tip_by_payment model
+ZeaOS> model list
 Export Name               Kind        Source Table          Promoted At
 ────────────────────────────────────────────────────────────────────────
 avg_tip_by_payment        model       avg_tip               2026-04-11 10:30:00
@@ -156,17 +156,17 @@ avg_tip_by_payment        model       avg_tip               2026-04-11 10:30:00
 
 To push a specific table regardless of promotions: `push <table> --target ...`
 
-To see active promotions at any time: `list` (shown as a footer if any exist) or `list --type=promotions`.
+To see active promotions at any time: `model list` (also shown as a footer on `list`).
 
-To remove a promotion: `unpromote <name>`. When no promotions remain, bare `push` reverts to pushing all session tables.
+To remove a promotion: `model unpromote <name>`. When no promotions remain, bare `push` reverts to pushing all session tables.
 
 Promotions persist across restarts.
 
 ### Generating the dbt bundle
 
 ```
-ZeaOS> validate --target=dbt          # check SQL portability
-ZeaOS> export --target=dbt -o ./zea-dbt-export
+ZeaOS> model validate                 # check SQL portability
+ZeaOS> model export -o ./zea-dbt-export
 ```
 
 The exported bundle contains model `.sql` files and `sources.yml` referencing the tables by their MotherDuck location. Push the data first, then run dbt against it.
