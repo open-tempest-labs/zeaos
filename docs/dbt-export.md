@@ -18,14 +18,13 @@ The workflow: explore freely in ZeaOS, promote the tables worth keeping, export 
 ## Commands
 
 ```
-promote <table> [as <name>] [model|semantic]   mark a table for export
-list                                            show session tables
-list --type=promotions                          show promoted artifacts
-validate [<name>] --target=dbt                 check portability
-export [<name>] --target=dbt [-o <dir>]        write dbt project bundle
+model promote <table> [as <name>] [model|semantic]   mark a table for export
+model list                                            show promoted artifacts
+model validate [<name>]                              check portability
+model export [<name>] [-o <dir>]                     write dbt project bundle
 ```
 
-`promote` and `list` are target-agnostic — they record intent without caring about the destination format. `validate` and `export` take `--target=dbt` to apply dbt-specific rules and generate dbt-specific files.
+`model promote` and `model list` are target-agnostic — they record intent without caring about the destination format. `model validate` and `model export` apply dbt-specific rules and generate dbt-specific files.
 
 ---
 
@@ -50,7 +49,7 @@ ZeaOS> zone_revenue = zeaql "SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(f
 ### Step 2 — Promote
 
 ```
-ZeaOS> promote zone_revenue as zone_revenue_by_pickup model
+ZeaOS> model promote zone_revenue as zone_revenue_by_pickup model
 promoted zone_revenue → zone_revenue_by_pickup (model)
 ```
 
@@ -59,7 +58,7 @@ The export name must be a valid dbt model name: lowercase, alphanumeric and unde
 Check what's been promoted:
 
 ```
-ZeaOS> list --type=promotions
+ZeaOS> model list
 Export Name               Kind        Source Table          Promoted At
 ────────────────────────────────────────────────────────────────────────
 zone_revenue_by_pickup    model       zone_revenue          2026-04-05 10:30:00
@@ -68,7 +67,7 @@ zone_revenue_by_pickup    model       zone_revenue          2026-04-05 10:30:00
 ### Step 3 — Validate
 
 ```
-ZeaOS> validate zone_revenue_by_pickup --target=dbt
+ZeaOS> model validate zone_revenue_by_pickup
 Validating zone_revenue_by_pickup (from zone_revenue)...
   ✓ SQL parses correctly
   ✓ 262 rows × 4 cols
@@ -85,7 +84,7 @@ Validation checks:
 ### Step 4 — Export
 
 ```
-ZeaOS> export zone_revenue_by_pickup --target=dbt -o ./taxi-dbt-project
+ZeaOS> model export zone_revenue_by_pickup -o ./taxi-dbt-project
   created taxi-dbt-project/models/zone_revenue_by_pickup.sql
   created taxi-dbt-project/models/zone_revenue_by_pickup.yml
   created taxi-dbt-project/sources/zea_sources.yml
@@ -247,8 +246,8 @@ dbt test                      # run generated column tests
 `export` without a name exports all promoted artifacts:
 
 ```
-ZeaOS> promote avg_tip as avg_tip_by_payment model
-ZeaOS> export --target=dbt -o ./taxi-dbt-project
+ZeaOS> model promote avg_tip as avg_tip_by_payment model
+ZeaOS> model export -o ./taxi-dbt-project
 ```
 
 Each artifact gets its own `.sql` and `.yml` file. Source definitions are deduplicated — if two models share a source URI it appears once in `zea_sources.yml`.
@@ -268,7 +267,7 @@ Each artifact gets its own `.sql` and `.yml` file. Source definitions are dedupl
 | `zearun <plugin>` | ❌ | Non-portable, marked in manifest |
 | `random()`, `now()` | ❌ | Non-deterministic, flagged by validate |
 
-The `validate` command reports any portability issues before you export. Non-portable warnings appear in the model YAML `meta.zea_warnings` field so they're visible to dbt model reviewers.
+The `model validate` command reports any portability issues before you export. Non-portable warnings appear in the model YAML `meta.zea_warnings` field so they're visible to dbt model reviewers.
 
 ---
 

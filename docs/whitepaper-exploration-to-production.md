@@ -68,17 +68,17 @@ Without the chain, you have query results. With the chain, you have a reproducib
 
 ## Promoting to dbt
 
-When analysis is ready to share, `promote` marks a table for export:
+When analysis is ready to share, `model promote` marks a table for export:
 
 ```
-ZeaOS> promote zone_revenue as zone_revenue_by_pickup model
-ZeaOS> promote avg_tip as avg_tip_by_payment model
+ZeaOS> model promote zone_revenue as zone_revenue_by_pickup model
+ZeaOS> model promote avg_tip as avg_tip_by_payment model
 ```
 
-`validate` checks portability before anything is pushed:
+`model validate` checks portability before anything is pushed:
 
 ```
-ZeaOS> validate zone_revenue_by_pickup --target=dbt
+ZeaOS> model validate zone_revenue_by_pickup
 Validating zone_revenue_by_pickup (from zone_revenue)...
   ✓ SQL structure valid
   ✓ 254 rows × 4 cols

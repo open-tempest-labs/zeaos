@@ -274,12 +274,14 @@ func (d *DriveManager) saveConfig(cfg *volConfig) error {
 // Exec dispatches a zeadrive subcommand.
 func (d *DriveManager) Exec(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("zeadrive: subcommand required (status, mount, unmount, enable-s3)")
+		return fmt.Errorf("zeadrive: subcommand required (status, ls, mount, unmount, enable-s3)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "status":
 		return d.execStatus()
+	case "ls":
+		return d.execLS(rest)
 	case "mount":
 		return d.execMount(rest)
 	case "unmount", "umount":
@@ -691,4 +693,101 @@ func awsCredentialsExist() bool {
 	home, _ := os.UserHomeDir()
 	_, err := os.Stat(filepath.Join(home, ".aws", "credentials"))
 	return err == nil
+}
+
+// execLS lists the contents of a zea:// path (or the zea:// root if no path given).
+func (d *DriveManager) execLS(args []string) error {
+	zeaPath := "zea://"
+	if len(args) > 0 {
+		zeaPath = args[0]
+		if !strings.HasPrefix(zeaPath, "zea://") {
+			zeaPath = "zea://" + zeaPath
+		}
+	}
+
+	mount, subPath := d.mountAndSubpathForZeaPath(zeaPath)
+
+	// S3 backend — use ListObjectsV2 with a delimiter to get a directory-like view.
+	if mount != nil && mount.Backend == "s3" {
+		return d.execLSS3(mount, subPath)
+	}
+
+	// Local or FUSE-mounted path — use the filesystem.
+	fsPath := d.ExpandPath(zeaPath)
+	entries, err := os.ReadDir(fsPath)
+	if err != nil {
+		return fmt.Errorf("zeadrive ls: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			fmt.Printf("  %s/\n", e.Name())
+		} else {
+			info, _ := e.Info()
+			if info != nil {
+				fmt.Printf("  %-40s  %d\n", e.Name(), info.Size())
+			} else {
+				fmt.Printf("  %s\n", e.Name())
+			}
+		}
+	}
+	return nil
+}
+
+// execLSS3 lists objects under a prefix in an S3 backend using a delimiter so
+// it behaves like a directory listing rather than a flat key dump.
+func (d *DriveManager) execLSS3(mount *volMount, subPath string) error {
+	bucket, _ := mount.Config["bucket"].(string)
+	prefix, _ := mount.Config["prefix"].(string)
+	region, _ := mount.Config["region"].(string)
+	endpoint, _ := mount.Config["endpoint"].(string)
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	// Build the S3 key prefix to list under.
+	keyPrefix := strings.TrimPrefix(
+		strings.ReplaceAll(prefix+"/"+subPath, "//", "/"), "/")
+	if keyPrefix != "" && !strings.HasSuffix(keyPrefix, "/") {
+		keyPrefix += "/"
+	}
+
+	ctx := context.Background()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return fmt.Errorf("zeadrive ls: load AWS config: %w", err)
+	}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true
+		}
+	})
+
+	delim := "/"
+	resp, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(bucket),
+		Prefix:    aws.String(keyPrefix),
+		Delimiter: aws.String(delim),
+	})
+	if err != nil {
+		return fmt.Errorf("zeadrive ls: %w", err)
+	}
+
+	if len(resp.CommonPrefixes) == 0 && len(resp.Contents) == 0 {
+		fmt.Println("  (empty)")
+		return nil
+	}
+
+	for _, cp := range resp.CommonPrefixes {
+		name := strings.TrimPrefix(aws.ToString(cp.Prefix), keyPrefix)
+		fmt.Printf("  %s\n", name) // already has trailing slash
+	}
+	for _, obj := range resp.Contents {
+		name := strings.TrimPrefix(aws.ToString(obj.Key), keyPrefix)
+		if name == "" {
+			continue
+		}
+		fmt.Printf("  %-40s  %d\n", name, obj.Size)
+	}
+	return nil
 }

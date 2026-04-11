@@ -253,7 +253,7 @@ func execPushStatus(s *Session) error {
 			}
 			rows = append(rows, row{
 				table:    entry.Name,
-				target:   rec.Target + "/" + rec.Schema + "." + rec.TableName,
+				target:   rec.Target + "/" + rec.Schema + "/" + rec.TableName,
 				pushedAt: rec.PushedAt.Format("2006-01-02 15:04:05"),
 				format:   format,
 				rows:     fmt.Sprintf("%d", rec.RowCount),

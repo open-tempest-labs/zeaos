@@ -274,6 +274,7 @@ save trips zea://data/trips.parquet      # write back to ZeaDrive
 
 enable-s3                                # TUI form: configure S3 backend
 zeadrive status                          # show backends and mount state
+zeadrive ls [zea://path]                 # list files at a zea:// path (local, FUSE, or S3)
 ```
 
 ### Model

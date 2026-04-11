@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/open-tempest-labs/zeashell/tui"
 )
 
@@ -263,7 +265,22 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		if len(cmd.Args) == 0 {
 			return fmt.Errorf("zeaview: table name required")
 		}
-		return execZeaview(cmd.Args[0], s)
+		var limit int64 = -1 // -1 = no limit specified
+		tableName := ""
+		for _, a := range cmd.Args {
+			if a == "--limit=full" {
+				limit = 0 // 0 = full
+			} else if strings.HasPrefix(a, "--limit=") {
+				n, err := strconv.ParseInt(strings.TrimPrefix(a, "--limit="), 10, 64)
+				if err != nil || n <= 0 {
+					return fmt.Errorf("zeaview: --limit must be a positive integer or 'full'")
+				}
+				limit = n
+			} else if tableName == "" {
+				tableName = a
+			}
+		}
+		return execZeaview(tableName, limit, s)
 	case "hist":
 		s.ShowHist()
 		return nil
@@ -329,7 +346,13 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 // execZeaview opens the zeashell TUI viewer for the named table.
 // When Arrow records are in memory they are passed directly — zero copy,
 // no IPC serialisation. Falls back to file-based viewing if records were evicted.
-func execZeaview(name string, s *Session) error {
+const zeaviewLargeRowThreshold = 1_500_000
+
+// execZeaview opens the TUI viewer for a session table.
+// limit == -1: no flag given — warn and abort if table exceeds threshold.
+// limit == 0:  --limit=full — load all rows.
+// limit > 0:   --limit=N — cap to N rows.
+func execZeaview(name string, limit int64, s *Session) error {
 	entry, err := s.Get(name)
 	if err != nil {
 		return err
@@ -337,7 +360,32 @@ func execZeaview(name string, s *Session) error {
 	if entry.records == nil || entry.schema == nil {
 		return tui.RunViewFromSource(entry.FilePath, nil)
 	}
-	return tui.RunViewFromArrow(entry.schema, entry.records, nil)
+	if entry.RowCount > zeaviewLargeRowThreshold && limit == -1 {
+		fmt.Printf("  %s has %d rows — add a limit before opening the viewer:\n",
+			name, entry.RowCount)
+		fmt.Printf("    zeaview %s --limit=500000   # first 500k rows\n", name)
+		fmt.Printf("    zeaview %s --limit=full      # all rows (may be slow)\n", name)
+		return nil
+	}
+	records := entry.records
+	if limit > 0 {
+		records = capRecordBatches(records, limit)
+	}
+	return tui.RunViewFromArrow(entry.schema, records, nil)
+}
+
+// capRecordBatches returns the leading batches whose cumulative row count does
+// not exceed limit. It never splits a batch, so the actual count may be up to
+// one batch-size less than limit.
+func capRecordBatches(records []arrow.Record, limit int64) []arrow.Record {
+	var total int64
+	for i, rec := range records {
+		if total+rec.NumRows() > limit {
+			return records[:i]
+		}
+		total += rec.NumRows()
+	}
+	return records
 }
 
 func execDescribe(name string, s *Session) error {

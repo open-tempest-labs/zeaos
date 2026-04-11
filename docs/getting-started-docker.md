@@ -193,9 +193,26 @@ Verify the snapshots landed correctly:
 
 ```
 ZeaOS> iceberg verify zone_revenue avg_tip payment_pivot
-Verifying zone_revenue...  ✓ snapshot valid  254 rows
-Verifying avg_tip...        ✓ snapshot valid  5 rows
-Verifying payment_pivot...  ✓ snapshot valid  254 rows
+zea://s3-data/analytics/analytics/zone_revenue
+  Snapshot             Status      Rows          Change          Session
+  ──────────────────────────────────────────────────────────────────────────────────────
+  1744000000000        ✓ verified  254           first verify    .../zeaos
+
+  ✓ 1 snapshot(s) verified, 1 new baseline(s) established
+
+zea://s3-data/analytics/analytics/avg_tip
+  Snapshot             Status      Rows          Change          Session
+  ──────────────────────────────────────────────────────────────────────────────────────
+  1744000001000        ✓ verified  5             first verify    .../zeaos
+
+  ✓ 1 snapshot(s) verified, 1 new baseline(s) established
+
+zea://s3-data/analytics/analytics/payment_pivot
+  Snapshot             Status      Rows          Change          Session
+  ──────────────────────────────────────────────────────────────────────────────────────
+  1744000002000        ✓ verified  254           first verify    .../zeaos
+
+  ✓ 1 snapshot(s) verified, 1 new baseline(s) established
 ```
 
 ---
