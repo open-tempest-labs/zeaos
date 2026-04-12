@@ -1,5 +1,6 @@
 ---
 title: "Publishing NYC Taxi Analysis as Data Models via GitHub"
+render_with_liquid: false
 ---
 
 # Publishing NYC Taxi Analysis as Data Models via GitHub

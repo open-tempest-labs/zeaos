@@ -1,3 +1,8 @@
+---
+title: "ZeaOS → dbt Export"
+render_with_liquid: false
+---
+
 # ZeaOS → dbt Export
 
 *Zea is the local, Arrow-native exploration and promotion layer that feeds high-quality, validated artifacts into dbt. dbt owns modeling, orchestration, documentation, and production governance.*

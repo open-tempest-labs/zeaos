@@ -1,6 +1,7 @@
 ---
 title: "From Exploration to Production: Analysis That Knows Where It Came From"
 description: "How ZeaOS bridges the gap between interactive DuckDB analysis and production dbt on MotherDuck — without losing provenance at the handoff."
+render_with_liquid: false
 ---
 
 # From Exploration to Production: Analysis That Knows Where It Came From
