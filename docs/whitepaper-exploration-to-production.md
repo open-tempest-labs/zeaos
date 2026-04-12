@@ -86,10 +86,10 @@ Validating zone_revenue_by_pickup (from zone_revenue)...
   ✓ portable: duckdb dialect, no non-standard functions detected
 ```
 
-Then `publish` generates a complete, working dbt Core project and pushes it to GitHub:
+Then `model publish` generates a complete, working dbt Core project and pushes it to GitHub:
 
 ```
-ZeaOS> publish --repo myorg/nyc-taxi-dbt --new
+ZeaOS> model publish --repo myorg/nyc-taxi-dbt --new
   created models/zone_revenue_by_pickup.sql
   created models/zone_revenue_by_pickup.yml
   created models/avg_tip_by_payment.sql
