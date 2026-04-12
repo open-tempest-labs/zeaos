@@ -22,12 +22,12 @@ zone_revenue = zeaql "SELECT PULocationID, COUNT(*) AS trips, ROUND(SUM(fare_amo
 avg_tip = zeaql "SELECT payment_type, ROUND(AVG(tip_amount), 2) AS avg_tip, COUNT(*) AS trips FROM trips GROUP BY payment_type ORDER BY avg_tip DESC"
 
 # --- promote ---
-promote zone_revenue as zone_revenue_by_pickup model
-promote avg_tip as avg_tip_by_payment model
+model promote zone_revenue as zone_revenue_by_pickup model
+model promote avg_tip as avg_tip_by_payment model
 
 # --- validate ---
-validate zone_revenue_by_pickup --target=dbt
-validate avg_tip_by_payment --target=dbt
+model validate zone_revenue_by_pickup
+model validate avg_tip_by_payment
 
 # --- publish ($ARGS receives the flags passed to zearun, e.g. --repo lmccay/nyc-taxi-dbt --new) ---
-publish $ARGS
+model publish $ARGS
