@@ -1,8 +1,7 @@
 ---
 title: "ZeaOS → dbt Export"
-render_with_liquid: false
 ---
-
+{% raw %}
 # ZeaOS → dbt Export
 
 *Zea is the local, Arrow-native exploration and promotion layer that feeds high-quality, validated artifacts into dbt. dbt owns modeling, orchestration, documentation, and production governance.*
@@ -288,3 +287,4 @@ cp taxi-dbt-project/sources/*.yml     my-existing-project/models/zea/
 ```
 
 Replace the auto-generated `{{ source('zea_http', ...) }}` references with `{{ ref(...) }}` references to your project's existing source or staging models as appropriate.
+{% endraw %}

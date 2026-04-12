@@ -1,9 +1,8 @@
 ---
 title: "From Exploration to Production: Analysis That Knows Where It Came From"
 description: "How ZeaOS bridges the gap between interactive DuckDB analysis and production dbt on MotherDuck — without losing provenance at the handoff."
-render_with_liquid: false
 ---
-
+{% raw %}
 # From Exploration to Production: Analysis That Knows Where It Came From
 
 *How ZeaOS bridges the gap between interactive DuckDB analysis and production dbt on MotherDuck — without losing provenance at the handoff.*
@@ -302,3 +301,4 @@ Source: [github.com/open-tempest-labs/zeaos](https://github.com/open-tempest-lab
 ---
 
 *ZeaOS is developed by [Open Tempest Labs](https://github.com/open-tempest-labs).*
+{% endraw %}

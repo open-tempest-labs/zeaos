@@ -1,8 +1,7 @@
 ---
 title: "Publishing NYC Taxi Analysis as Data Models via GitHub"
-render_with_liquid: false
 ---
-
+{% raw %}
 # Publishing NYC Taxi Analysis as Data Models via GitHub
 
 *This tutorial picks up from the [NYC Taxi Analysis](tutorial-nyc-taxi) walkthrough and takes it all the way to a running dbt project. By the end you will have promoted the session's key analytical tables as named model artifacts, published a dbt Core project to GitHub, cloned it, and run `dbt run` to materialise the models — no warehouse, no cloud account, no data loading required.*
@@ -359,3 +358,4 @@ ZeaOS> model publish set-repo lmccay/nyc-taxi-dbt
 ---
 
 *ZeaOS is developed by [Open Tempest Labs](https://github.com/open-tempest-labs). Source: [github.com/open-tempest-labs/zeaos](https://github.com/open-tempest-labs/zeaos)*
+{% endraw %}
