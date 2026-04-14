@@ -302,6 +302,32 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 			fmt.Printf("dropped %d table(s)\n", len(names))
 			return nil
 		}
+		fromPlugin := ""
+		if cmd.Args[0] == "--from" && len(cmd.Args) >= 2 {
+			fromPlugin = cmd.Args[1]
+		} else if strings.HasPrefix(cmd.Args[0], "--from=") {
+			fromPlugin = strings.TrimPrefix(cmd.Args[0], "--from=")
+		}
+		if fromPlugin != "" {
+			if fromPlugin == "" {
+				return fmt.Errorf("drop: --from requires a plugin name")
+			}
+			var toDelete []string
+			for n, e := range s.Registry {
+				if tableFromPlugin(e, fromPlugin) {
+					toDelete = append(toDelete, n)
+				}
+			}
+			for _, n := range toDelete {
+				s.Drop(n)
+			}
+			if len(toDelete) == 0 {
+				fmt.Printf("no tables produced by plugin %q\n", fromPlugin)
+			} else {
+				fmt.Printf("dropped %d table(s) produced by %q\n", len(toDelete), fromPlugin)
+			}
+			return nil
+		}
 		if err := s.Drop(cmd.Args[0]); err != nil {
 			return err
 		}
@@ -767,6 +793,7 @@ TRANSFORMS  (chainable with |)
 SESSION
   t2 = t1                            alias / copy a table
   drop <table>                       remove table from session
+  drop --from <plugin>               remove all tables produced by a plugin
   save <table> <path>                export to file  (.parquet / .csv / .json)
                                      path may be a zea:// URL
   hist                               table lineage DAG (TUI)

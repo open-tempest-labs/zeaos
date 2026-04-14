@@ -106,34 +106,67 @@ func execPromote(args []string, s *Session) error {
 
 // --- list ---
 
+// tableFromPlugin reports whether the given TableEntry was produced by the
+// named plugin — i.e. its Ops slice contains "zearun(<plugin>)".
+func tableFromPlugin(e *TableEntry, plugin string) bool {
+	if plugin == "" {
+		return false
+	}
+	target := "zearun(" + plugin + ")"
+	for _, op := range e.Ops {
+		if op == target {
+			return true
+		}
+	}
+	return false
+}
+
 // execList shows session tables (default) or promoted artifacts (--type=promotions).
 func execList(args []string, s *Session) error {
 	listType := "tables"
-	for _, a := range args {
-		if strings.HasPrefix(a, "--type=") {
-			listType = strings.TrimPrefix(a, "--type=")
+	fromPlugin := ""
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--type=") {
+			listType = strings.TrimPrefix(args[i], "--type=")
+		} else if args[i] == "--from" && i+1 < len(args) {
+			fromPlugin = args[i+1]
+			i++
+		} else if strings.HasPrefix(args[i], "--from=") {
+			fromPlugin = strings.TrimPrefix(args[i], "--from=")
 		}
+	}
+	if fromPlugin != "" && listType == "promotions" {
+		return fmt.Errorf("list: --from cannot be combined with --type=promotions")
 	}
 	switch listType {
 	case "promotions":
 		return execListPromotions(s)
 	default:
-		return execListTables(s)
+		return execListTables(s, fromPlugin)
 	}
 }
 
-func execListTables(s *Session) error {
+func execListTables(s *Session, fromPlugin string) error {
 	if len(s.Registry) == 0 {
 		fmt.Println("(no tables in session)")
 		return nil
 	}
 	fmt.Printf("%-24s  %10s  %6s  %s\n", "Table", "Rows", "Cols", "Ops")
 	fmt.Println(strings.Repeat("─", 70))
+	count := 0
 	for _, e := range s.Registry {
+		if fromPlugin != "" && !tableFromPlugin(e, fromPlugin) {
+			continue
+		}
 		ops := strings.Join(e.Ops, " | ")
 		fmt.Printf("%-24s  %10d  %6d  %s\n", e.Name, e.RowCount, e.ColCount, ops)
+		count++
 	}
-	if len(s.Promoted) > 0 {
+	if fromPlugin != "" && count == 0 {
+		fmt.Printf("(no tables produced by plugin %q)\n", fromPlugin)
+		return nil
+	}
+	if fromPlugin == "" && len(s.Promoted) > 0 {
 		names := make([]string, 0, len(s.Promoted))
 		for name := range s.Promoted {
 			names = append(names, name)
