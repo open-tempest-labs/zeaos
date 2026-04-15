@@ -266,7 +266,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 			return fmt.Errorf("zeaview: table name required")
 		}
 		var limit int64 = -1 // -1 = no limit specified
-		tableName := ""
+		orientation := "top-bottom"
+		var tableNames []string
 		for _, a := range cmd.Args {
 			if a == "--limit=full" {
 				limit = 0 // 0 = full
@@ -276,11 +277,27 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 					return fmt.Errorf("zeaview: --limit must be a positive integer or 'full'")
 				}
 				limit = n
-			} else if tableName == "" {
-				tableName = a
+			} else if strings.HasPrefix(a, "--orientation=") {
+				orientation = strings.TrimPrefix(a, "--orientation=")
+			} else {
+				tableNames = append(tableNames, a)
 			}
 		}
-		return execZeaview(tableName, limit, s)
+		if len(tableNames) == 0 {
+			return fmt.Errorf("zeaview: table name required")
+		}
+		// Reject duplicate table names
+		seen := make(map[string]struct{}, len(tableNames))
+		for _, n := range tableNames {
+			if _, dup := seen[n]; dup {
+				return fmt.Errorf("zeaview: duplicate table %q — each pane must be a different table", n)
+			}
+			seen[n] = struct{}{}
+		}
+		if len(tableNames) == 1 {
+			return execZeaview(tableNames[0], limit, s)
+		}
+		return execZeaviewSplit(tableNames, orientation, s)
 	case "hist":
 		s.ShowHist()
 		return nil
@@ -398,6 +415,26 @@ func execZeaview(name string, limit int64, s *Session) error {
 		records = capRecordBatches(records, limit)
 	}
 	return tui.RunViewFromArrow(entry.schema, records, nil)
+}
+
+// execZeaviewSplit opens multiple tables in a split-pane TUI viewer.
+func execZeaviewSplit(names []string, orientation string, s *Session) error {
+	panes := make([]tui.SplitPane, 0, len(names))
+	for _, name := range names {
+		entry, err := s.Get(name)
+		if err != nil {
+			return err
+		}
+		if entry.records == nil || entry.schema == nil {
+			return fmt.Errorf("zeaview: table %q has no in-memory records; split view requires in-memory tables", name)
+		}
+		panes = append(panes, tui.SplitPane{
+			Name:    name,
+			Schema:  entry.schema,
+			Records: entry.records,
+		})
+	}
+	return tui.RunSplitViewFromArrow(panes, orientation)
 }
 
 // capRecordBatches returns the leading batches whose cumulative row count does
@@ -818,8 +855,10 @@ SESSION
 
 VIEWER
   describe <table>                   show schema, row/col counts, lineage
-  zeaview <table>                    open TUI viewer (s sort, f filter,
-                                     g graph, e export, d schema, ? help)
+  zeaview <table> [<table2> ...]      open TUI viewer; multiple tables open
+                                     in split panes (Tab cycles focus)
+                                     --orientation=left-right  side-by-side
+                                     s sort, f filter, e export, ? help
 
 DRIVE
   zea:// paths work everywhere — no mount required for local storage:
