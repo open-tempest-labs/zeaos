@@ -669,7 +669,24 @@ func execPluginRun(args []string, s *Session) error {
 		return showPluginHelp(scriptPath, args[0])
 	}
 	if isZeaScript(scriptPath) {
-		return execZeaScript(scriptPath, args[1:], s)
+		// Snapshot existing table names so we can tag newly created tables
+		// with zearun(<scriptName>) after the script completes. This allows
+		// `drop --from <script>` and `list --from <script>` to work correctly
+		// for orchestration scripts that produce tables via inner zearun calls.
+		before := make(map[string]struct{}, len(s.Registry))
+		for n := range s.Registry {
+			before[n] = struct{}{}
+		}
+		if err := execZeaScript(scriptPath, args[1:], s); err != nil {
+			return err
+		}
+		scriptTag := fmt.Sprintf("zearun(%s)", args[0])
+		for n, e := range s.Registry {
+			if _, existed := before[n]; !existed {
+				e.Ops = append(e.Ops, scriptTag)
+			}
+		}
+		return nil
 	}
 	c := exec.Command(scriptPath, args[1:]...)
 	c.Env = pluginEnv(s)
