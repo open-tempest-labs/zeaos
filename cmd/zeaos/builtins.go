@@ -298,6 +298,8 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 			return execZeaview(tableNames[0], limit, s)
 		}
 		return execZeaviewSplit(tableNames, orientation, s)
+	case "credentials":
+		return execCredentials(cmd.Args, s)
 	case "hist":
 		s.ShowHist()
 		return nil
@@ -449,6 +451,92 @@ func capRecordBatches(records []arrow.Record, limit int64) []arrow.Record {
 		total += rec.NumRows()
 	}
 	return records
+}
+
+func execCredentials(args []string, s *Session) error {
+	if s.Creds == nil {
+		return fmt.Errorf("credentials: store unavailable")
+	}
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "add":
+		cred, ok := RunCredentialAddTUI(nil)
+		if !ok {
+			fmt.Println("cancelled")
+			return nil
+		}
+		if err := s.Creds.UnlockInteractive(); err != nil {
+			return err
+		}
+		if err := s.Creds.Save(cred); err != nil {
+			return err
+		}
+		fmt.Printf("saved credential %q (%d field(s))\n", cred.Name, len(cred.Fields))
+
+	case "list":
+		names, err := s.Creds.List()
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Println("(no credentials stored)")
+			return nil
+		}
+		if err := s.Creds.UnlockInteractive(); err != nil {
+			return err
+		}
+		var creds []Credential
+		for _, n := range names {
+			c, err := s.Creds.Load(n)
+			if err != nil {
+				return err
+			}
+			creds = append(creds, c)
+		}
+		RunCredentialListTUI(creds)
+
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("credentials show: name required")
+		}
+		if err := s.Creds.UnlockInteractive(); err != nil {
+			return err
+		}
+		cred, err := s.Creds.Load(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Credential: %s\n", cred.Name)
+		for _, f := range cred.Fields {
+			fmt.Printf("  %-20s  %s\n", f.Key, maskValue(f.Value))
+		}
+
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("credentials delete: name required")
+		}
+		if err := s.Creds.Delete(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("deleted credential %q\n", args[1])
+
+	case "unlock":
+		if s.Creds.IsUnlocked() {
+			fmt.Println("credentials: already unlocked")
+			return nil
+		}
+		if err := s.Creds.UnlockInteractive(); err != nil {
+			return err
+		}
+		fmt.Println("credentials: unlocked")
+
+	default:
+		fmt.Println("Usage: credentials <add|list|show <name>|delete <name>|unlock>")
+	}
+	return nil
 }
 
 func execDescribe(name string, s *Session) error {
@@ -619,6 +707,7 @@ func execZeaScript(path string, args []string, s *Session) error {
 		return fmt.Errorf("zearun: %w", err)
 	}
 	argsStr := strings.Join(args, " ")
+	credVars := credSubstMap(s) // $ZEACRED_* substitutions from unlocked store
 	lineNum := 0
 	for _, raw := range strings.Split(string(data), "\n") {
 		lineNum++
@@ -627,6 +716,9 @@ func execZeaScript(path string, args []string, s *Session) error {
 			continue
 		}
 		line = strings.ReplaceAll(line, "$ARGS", argsStr)
+		for k, v := range credVars {
+			line = strings.ReplaceAll(line, k, v)
+		}
 		if err := execLine(line, s); err != nil {
 			return fmt.Errorf("zearun %s line %d: %w", filepath.Base(path), lineNum, err)
 		}
@@ -635,7 +727,7 @@ func execZeaScript(path string, args []string, s *Session) error {
 }
 
 // pluginEnv returns the environment for plugin execution: the current process
-// environment plus ZeaOS-specific vars so scripts can locate session data.
+// environment plus ZeaOS-specific vars and any unlocked ZEACRED_* credentials.
 func pluginEnv(s *Session) []string {
 	env := os.Environ()
 	if s != nil {
@@ -643,8 +735,126 @@ func pluginEnv(s *Session) []string {
 			"ZEAOS_SESSION_DIR="+s.Dir,
 			"ZEAOS_TABLES_DIR="+s.TablesDir,
 		)
+		env = append(env, credEnvVars(s)...)
 	}
 	return env
+}
+
+// credEnvVars returns ZEACRED_<NAME>_<KEY>=value entries for all stored
+// credentials if the store is unlocked. Returns nil if locked or unavailable.
+// Naming: credential "jira", key "api_key" → ZEACRED_JIRA_API_KEY
+func credEnvVars(s *Session) []string {
+	if s.Creds == nil || !s.Creds.IsUnlocked() {
+		return nil
+	}
+	names, err := s.Creds.List()
+	if err != nil {
+		return nil
+	}
+	var vars []string
+	for _, name := range names {
+		cred, err := s.Creds.Load(name)
+		if err != nil {
+			continue
+		}
+		prefix := "ZEACRED_" + credEnvName(name) + "_"
+		for _, f := range cred.Fields {
+			vars = append(vars, prefix+credEnvName(f.Key)+"="+f.Value)
+		}
+	}
+	return vars
+}
+
+// credEnvName converts a credential name or key to its env-var segment:
+// uppercase, with dots and hyphens replaced by underscores.
+func credEnvName(s string) string {
+	s = strings.ToUpper(s)
+	s = strings.ReplaceAll(s, ".", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
+}
+
+// credSubstMap returns a map of $ZEACRED_* variable name → value for use in
+// .zea script line substitution. Mirrors credEnvVars but as a lookup map.
+func credSubstMap(s *Session) map[string]string {
+	m := make(map[string]string)
+	for _, kv := range credEnvVars(s) {
+		idx := strings.IndexByte(kv, '=')
+		if idx > 0 {
+			m["$"+kv[:idx]] = kv[idx+1:]
+		}
+	}
+	return m
+}
+
+// parseRequires returns the credential references declared in a plugin file's
+// "#! requires:" header lines, e.g. ["jira.api_key", "jira.base_url"].
+func parseRequires(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var refs []string
+	for _, raw := range strings.SplitN(string(data), "\n", 50) {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#!") {
+			// Stop at first non-shebang/non-meta line
+			if !strings.HasPrefix(line, "#") {
+				break
+			}
+			continue
+		}
+		after := strings.TrimSpace(strings.TrimPrefix(line, "#!"))
+		if !strings.HasPrefix(after, "requires:") {
+			continue
+		}
+		for _, ref := range strings.Split(strings.TrimPrefix(after, "requires:"), ",") {
+			ref = strings.TrimSpace(ref)
+			if ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+// ensureCredentials checks #! requires: declarations for a plugin file and
+// unlocks the credential store interactively if any are declared. Returns an
+// error if a required credential or field is missing after unlock.
+func ensureCredentials(path string, s *Session) error {
+	if s.Creds == nil {
+		return nil
+	}
+	refs := parseRequires(path)
+	if len(refs) == 0 {
+		return nil
+	}
+	if err := s.Creds.UnlockInteractive(); err != nil {
+		return err
+	}
+	var missing []string
+	for _, ref := range refs {
+		parts := strings.SplitN(ref, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		cred, err := s.Creds.Load(parts[0])
+		if err != nil {
+			missing = append(missing, ref)
+			continue
+		}
+		if _, err := cred.Get(parts[1]); err != nil {
+			missing = append(missing, ref)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("plugin requires credentials not found: %s\n  use 'credentials add' to provision them",
+			strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // extractZeaHelp returns the leading comment block from a .zea script,
@@ -705,6 +915,9 @@ func execPluginRun(args []string, s *Session) error {
 	if len(args) == 2 && args[1] == "--help" {
 		return showPluginHelp(scriptPath, args[0])
 	}
+	if err := ensureCredentials(scriptPath, s); err != nil {
+		return err
+	}
 	if isZeaScript(scriptPath) {
 		// Snapshot existing table names so we can tag newly created tables
 		// with zearun(<scriptName>) after the script completes. This allows
@@ -744,6 +957,9 @@ func execPluginCapture(cmd *Cmd, s *Session) error {
 	}
 	if isZeaScript(scriptPath) {
 		return fmt.Errorf("zearun %s: ZeaOS scripts run in the current session and don't produce tabular output — use 'zearun %s' without assignment", pluginName, pluginName)
+	}
+	if err := ensureCredentials(scriptPath, s); err != nil {
+		return err
 	}
 
 	var buf bytes.Buffer
@@ -859,6 +1075,15 @@ VIEWER
                                      in split panes (Tab cycles focus)
                                      --orientation=left-right  side-by-side
                                      s sort, f filter, e export, ? help
+
+CREDENTIALS
+  credentials add                    TUI to create an encrypted credential
+  credentials list                   browse stored credentials (values masked)
+  credentials show <name>            print fields for a credential (masked)
+  credentials delete <name>          remove a credential
+  credentials unlock                 pre-unlock the store for this session
+  (password is prompted on first use; same password works on any machine
+   that has a copy of ~/.zeaos/credentials/)
 
 DRIVE
   zea:// paths work everywhere — no mount required for local storage:

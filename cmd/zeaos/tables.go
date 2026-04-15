@@ -49,6 +49,7 @@ type Session struct {
 	Registry  map[string]*TableEntry
 	Promoted  map[string]*PromotedArtifact // keyed by export name
 	Drive     *DriveManager
+	Creds     *CredStore
 
 	db        *sql.DB
 	arrowConn *sql.Conn
@@ -115,6 +116,12 @@ func NewSession() (*Session, error) {
 		_, _ = arrowConn.ExecContext(ctx, stmt)
 	})
 
+	creds, err := NewCredStore(filepath.Join(dir, "credentials"))
+	if err != nil {
+		// Non-fatal: credential store failure should not prevent ZeaOS from starting.
+		creds = nil
+	}
+
 	s := &Session{
 		Dir:       dir,
 		TablesDir: tablesDir,
@@ -124,6 +131,7 @@ func NewSession() (*Session, error) {
 		arrowConn: arrowConn,
 		arrow:     ar,
 		Drive:     drive,
+		Creds:     creds,
 	}
 	_ = s.loadRegistry() // non-fatal: start fresh if no prior session
 	return s, nil
