@@ -76,11 +76,17 @@ func RunCredentialAddTUI(existing *Credential) (Credential, bool) {
 
 	var saved bool
 	var result Credential
+	var focusedPrim tview.Primitive
 
 	addBtn := tview.NewButton("[ Add Field ]").SetSelectedFunc(func() {
 		addField("", "")
-		app.SetFocus(rows[len(rows)-1].keyInput)
-		app.Draw()
+		newFocus := rows[len(rows)-1].keyInput
+		focusedPrim = newFocus
+		// SetFocus is safe here: the event loop releases a.RLock before calling
+		// input handlers, so no lock is held. QueueUpdateDraw must NOT be used
+		// from within a SetSelectedFunc — it deadlocks on the updates channel.
+		// tview auto-redraws after this handler returns, so no Draw() needed.
+		app.SetFocus(newFocus)
 	})
 
 	saveBtn := tview.NewButton("[  Save  ]").SetSelectedFunc(func() {
@@ -146,24 +152,33 @@ func RunCredentialAddTUI(existing *Credential) (Credential, bool) {
 		return order
 	}
 
-	currentFocus := 0
-	prims := focusOrder()
-	app.SetFocus(prims[0])
+	// focusedPrim tracks which primitive currently has focus so Tab stays
+	// correct even after QueueUpdateDraw asynchronously moves focus (e.g.
+	// after Add Field).
+	focusedPrim = nameInput
+	app.SetFocus(focusedPrim)
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyEsc:
 			app.Stop()
 			return nil
-		case tcell.KeyTab:
-			prims = focusOrder()
-			currentFocus = (currentFocus + 1) % len(prims)
-			app.SetFocus(prims[currentFocus])
-			return nil
-		case tcell.KeyBacktab:
-			prims = focusOrder()
-			currentFocus = (currentFocus + len(prims) - 1) % len(prims)
-			app.SetFocus(prims[currentFocus])
+		case tcell.KeyTab, tcell.KeyBacktab:
+			prims := focusOrder()
+			idx := 0
+			for i, p := range prims {
+				if p == focusedPrim {
+					idx = i
+					break
+				}
+			}
+			if event.Key() == tcell.KeyTab {
+				idx = (idx + 1) % len(prims)
+			} else {
+				idx = (idx + len(prims) - 1) % len(prims)
+			}
+			focusedPrim = prims[idx]
+			app.SetFocus(focusedPrim)
 			return nil
 		}
 		return event
