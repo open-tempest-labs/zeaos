@@ -65,6 +65,9 @@ func NewCredStore(dir string) (*CredStore, error) {
 // IsUnlocked reports whether the store has a cached encryption key.
 func (cs *CredStore) IsUnlocked() bool { return cs.key != nil }
 
+// Dir returns the directory where credentials and the key file are stored.
+func (cs *CredStore) Dir() string { return cs.dir }
+
 // Unlock derives the AES-256 key from password and the stored salt, caching
 // it for the session. If no salt file exists a fresh one is created.
 func (cs *CredStore) Unlock(password string) error {
@@ -81,12 +84,20 @@ func (cs *CredStore) Unlock(password string) error {
 	return nil
 }
 
-// UnlockInteractive prompts the user for a password without echo and calls
-// Unlock. Returns immediately if already unlocked.
+// UnlockInteractive unlocks the store, trying each method in order:
+//  1. Already unlocked — no-op.
+//  2. ~/.zeaos/credentials/.key file (chmod 600) — silent, supports unattended
+//     scheduled runs where no human is present to type a password.
+//  3. Interactive password prompt (no echo) — fallback for interactive sessions.
 func (cs *CredStore) UnlockInteractive() error {
 	if cs.IsUnlocked() {
 		return nil
 	}
+	// Try .key file first so unattended/scheduled zearun calls work silently.
+	if err := cs.unlockFromKeyFile(); err == nil {
+		return nil
+	}
+	// Fall back to interactive prompt.
 	fmt.Print("Credentials password: ")
 	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
@@ -94,6 +105,21 @@ func (cs *CredStore) UnlockInteractive() error {
 		return fmt.Errorf("credentials: could not read password: %w", err)
 	}
 	return cs.Unlock(string(raw))
+}
+
+// unlockFromKeyFile attempts to read the password from ~/.zeaos/credentials/.key
+// (chmod 600). Returns an error if the file does not exist or decryption fails.
+func (cs *CredStore) unlockFromKeyFile() error {
+	keyPath := filepath.Join(cs.dir, ".key")
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return err // file absent — not an error worth logging
+	}
+	password := strings.TrimSpace(string(data))
+	if password == "" {
+		return fmt.Errorf("credentials: .key file is empty")
+	}
+	return cs.Unlock(password)
 }
 
 // Save encrypts and writes a credential to disk.

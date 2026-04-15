@@ -238,5 +238,7 @@ func maskValue(v string) string {
 	if len(v) <= 4 {
 		return strings.Repeat("*", len(v))
 	}
-	return v[:2] + strings.Repeat("*", len(v)-4) + v[len(v)-2:]
+	// Fixed-width mask regardless of actual length — prevents long secrets
+	// (e.g. Jira API tokens) from wrapping across lines.
+	return v[:2] + "••••••••" + v[len(v)-2:]
 }

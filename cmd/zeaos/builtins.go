@@ -14,6 +14,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/open-tempest-labs/zeashell/tui"
+	"golang.org/x/term"
 )
 
 // execLine dispatches a parsed Cmd to the appropriate handler.
@@ -533,8 +534,23 @@ func execCredentials(args []string, s *Session) error {
 		}
 		fmt.Println("credentials: unlocked")
 
+	case "set-key":
+		// Write the password to ~/.zeaos/credentials/.key (chmod 600).
+		// Used for unattended/scheduled runs where interactive prompt isn't possible.
+		fmt.Print("Credentials password: ")
+		raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return fmt.Errorf("credentials: could not read password: %w", err)
+		}
+		keyPath := filepath.Join(s.Creds.Dir(), ".key")
+		if err := os.WriteFile(keyPath, []byte(strings.TrimSpace(string(raw))+"\n"), 0600); err != nil {
+			return fmt.Errorf("credentials: could not write .key file: %w", err)
+		}
+		fmt.Printf("saved to %s (chmod 600) — unattended runs will unlock silently\n", keyPath)
+
 	default:
-		fmt.Println("Usage: credentials <add|list|show <name>|delete <name>|unlock>")
+		fmt.Println("Usage: credentials <add|list|show <name>|delete <name>|unlock|set-key>")
 	}
 	return nil
 }
@@ -1082,8 +1098,9 @@ CREDENTIALS
   credentials show <name>            print fields for a credential (masked)
   credentials delete <name>          remove a credential
   credentials unlock                 pre-unlock the store for this session
-  (password is prompted on first use; same password works on any machine
-   that has a copy of ~/.zeaos/credentials/)
+  credentials set-key                save password to ~/.zeaos/credentials/.key
+                                     (chmod 600) for unattended/scheduled runs
+  (unlock order: .key file → interactive prompt)
 
 DRIVE
   zea:// paths work everywhere — no mount required for local storage:
