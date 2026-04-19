@@ -123,13 +123,25 @@ func execLoadFile(cmd *Cmd, s *Session, file, label, sourceURI string) error {
 	case ".parquet":
 		readExpr = fmt.Sprintf("SELECT * FROM read_parquet('%s')", sqlEsc(file))
 	case ".csv":
-		readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(file))
+		if cmd.NoHeader {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s', header=false)", sqlEsc(file))
+		} else {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(file))
+		}
 	case ".tsv":
-		readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s', delim='\t')", sqlEsc(file))
+		if cmd.NoHeader {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s', delim='\t', header=false)", sqlEsc(file))
+		} else {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s', delim='\t')", sqlEsc(file))
+		}
 	case ".json", ".jsonl":
 		readExpr = fmt.Sprintf("SELECT * FROM read_json_auto('%s')", sqlEsc(file))
 	default:
-		readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(file))
+		if cmd.NoHeader {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s', header=false)", sqlEsc(file))
+		} else {
+			readExpr = fmt.Sprintf("SELECT * FROM read_csv_auto('%s')", sqlEsc(file))
+		}
 	}
 	entry, err := s.materializeArrow(cmd.Target, readExpr, nil, "",
 		[]string{fmt.Sprintf("load(%s)", label)})

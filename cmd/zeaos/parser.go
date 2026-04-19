@@ -30,9 +30,10 @@ type Cmd struct {
 	File    string   // resolved file path for load
 	RawSQL  string   // query string for zeaql "..."
 	Ops     []PipeOp // pipe operations after the source table
-	Builtin string   // name of builtin command
-	Args    []string // args to builtin or OS pipe
-	Raw     string   // original input line
+	Builtin  string   // name of builtin command
+	Args     []string // args to builtin or OS pipe
+	Raw      string   // original input line
+	NoHeader bool     // --no-header flag for CSV load
 }
 
 // ParseLine turns a REPL input line into a Cmd.
@@ -67,10 +68,17 @@ func ParseLine(line string) (*Cmd, error) {
 }
 
 func parseRHS(cmd *Cmd, rhs string) (*Cmd, error) {
-	// load FILE
+	// load FILE [--no-header]
 	if rest, ok := cutPrefix(rhs, "load "); ok {
 		cmd.Source = "load"
-		cmd.File = expandHome(strings.TrimSpace(rest))
+		parts := shellSplit(strings.TrimSpace(rest))
+		for _, p := range parts {
+			if p == "--no-header" {
+				cmd.NoHeader = true
+			} else {
+				cmd.File = expandHome(p)
+			}
+		}
 		return cmd, nil
 	}
 
