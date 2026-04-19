@@ -1169,10 +1169,28 @@ func execZeadrive(args []string, s *Session) error {
 
 // execOSPipe falls back to the system shell for unrecognised input.
 // Any zea:// tokens are expanded via DriveManager before passing to the shell.
+// For S3-backed paths without a FUSE mount, SDK-native commands (ls) are
+// handled directly rather than failing.
 func execOSPipe(line string, s *Session) error {
 	if strings.Contains(line, "zea://") {
-		// Replace each zea:// token individually so backend vs local routing applies.
 		parts := strings.Fields(line)
+		// "ls zea://..." in SDK mode → delegate to zeadrive ls.
+		if len(parts) >= 2 && parts[0] == "ls" {
+			hasS3 := false
+			for _, p := range parts[1:] {
+				if strings.Contains(p, "zea://") {
+					expanded := s.Drive.ExpandPath(p)
+					if s.Drive.IsS3Path(expanded) {
+						hasS3 = true
+						break
+					}
+				}
+			}
+			if hasS3 {
+				return s.Drive.Exec(append([]string{"ls"}, parts[1:]...))
+			}
+		}
+		// Replace each zea:// token individually so backend vs local routing applies.
 		for i, p := range parts {
 			if strings.Contains(p, "zea://") {
 				expanded := s.Drive.ExpandPath(p)
