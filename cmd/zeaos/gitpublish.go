@@ -69,73 +69,70 @@ func saveConfig(cfg *zeaosConfig) error {
 }
 
 // ---------------------------------------------------------------------------
-// Token storage
+// Token storage — backed by the encrypted credential store
 // ---------------------------------------------------------------------------
 
-type tokenStore struct {
-	Version string            `json:"version"`
-	Tokens  map[string]string `json:"tokens"`
-	Default string            `json:"default"`
-}
+// githubCredPrefix is the credential name prefix for GitHub PATs.
+const githubCredPrefix = "github."
 
-func tokenStorePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".zeaos", "github", "tokens.json")
-}
+// githubDefaultCred is the credential that stores the name of the default token.
+const githubDefaultCred = "github.__default"
 
-func loadTokenStore() (*tokenStore, error) {
-	path := tokenStorePath()
-	data, err := os.ReadFile(path)
+func githubCredName(tokenName string) string { return githubCredPrefix + tokenName }
+
+func getDefaultTokenName(s *Session) string {
+	if s == nil || s.Creds == nil || !s.Creds.IsUnlocked() {
+		return ""
+	}
+	cred, err := s.Creds.Load(githubDefaultCred)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &tokenStore{Version: "1", Tokens: map[string]string{}}, nil
-		}
-		return nil, err
+		return ""
 	}
-	var ts tokenStore
-	if err := json.Unmarshal(data, &ts); err != nil {
-		return nil, err
-	}
-	if ts.Tokens == nil {
-		ts.Tokens = map[string]string{}
-	}
-	return &ts, nil
+	name, _ := cred.Get("name")
+	return name
 }
 
-func saveTokenStore(ts *tokenStore) error {
-	path := tokenStorePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(ts, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Write with 0o600 so only the owner can read the token file.
-	return os.WriteFile(path, data, 0o600)
+func setDefaultTokenName(s *Session, name string) error {
+	return s.Creds.Save(Credential{
+		Name:   githubDefaultCred,
+		Fields: []CredentialField{{Key: "name", Value: name}},
+	})
 }
 
-func resolveToken(name string) (string, error) {
-	ts, err := loadTokenStore()
-	if err != nil {
-		return "", err
-	}
-	if name != "" {
-		tok, ok := ts.Tokens[name]
-		if !ok {
+func resolveToken(name string, s *Session) (string, error) {
+	if s != nil && s.Creds != nil && s.Creds.IsUnlocked() {
+		if name != "" {
+			cred, err := s.Creds.Load(githubCredName(name))
+			if err == nil {
+				if tok, err := cred.Get("token"); err == nil && tok != "" {
+					return tok, nil
+				}
+			}
 			return "", fmt.Errorf("token %q not found — add it with: publish token add %s --pat <token>", name, name)
 		}
-		return tok, nil
-	}
-	if ts.Default != "" {
-		tok, ok := ts.Tokens[ts.Default]
-		if ok {
-			return tok, nil
+		// Try the recorded default.
+		if defName := getDefaultTokenName(s); defName != "" {
+			if cred, err := s.Creds.Load(githubCredName(defName)); err == nil {
+				if tok, _ := cred.Get("token"); tok != "" {
+					return tok, nil
+				}
+			}
 		}
-	}
-	if len(ts.Tokens) == 1 {
-		for _, tok := range ts.Tokens {
-			return tok, nil
+		// If exactly one github token exists, use it.
+		if allNames, _ := s.Creds.List(); len(allNames) > 0 {
+			var githubTokens []string
+			for _, n := range allNames {
+				if strings.HasPrefix(n, githubCredPrefix) && n != githubDefaultCred {
+					githubTokens = append(githubTokens, n)
+				}
+			}
+			if len(githubTokens) == 1 {
+				if cred, err := s.Creds.Load(githubTokens[0]); err == nil {
+					if tok, _ := cred.Get("token"); tok != "" {
+						return tok, nil
+					}
+				}
+			}
 		}
 	}
 	// Fall back to gh CLI token.
@@ -167,23 +164,23 @@ func ghCLIToken() (string, error) {
 // publish token subcommands
 // ---------------------------------------------------------------------------
 
-func execPublishToken(args []string) error {
+func execPublishToken(args []string, s *Session) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: publish token add <name> --pat <token> | list")
 	}
 	switch args[0] {
 	case "add":
-		return execPublishTokenAdd(args[1:])
+		return execPublishTokenAdd(args[1:], s)
 	case "list":
-		return execPublishTokenList()
+		return execPublishTokenList(s)
 	case "remove", "rm":
-		return execPublishTokenRemove(args[1:])
+		return execPublishTokenRemove(args[1:], s)
 	default:
 		return fmt.Errorf("publish token: unknown subcommand %q (add | list | remove)", args[0])
 	}
 }
 
-func execPublishTokenAdd(args []string) error {
+func execPublishTokenAdd(args []string, s *Session) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: publish token add <name> --pat <token>")
 	}
@@ -202,69 +199,92 @@ func execPublishTokenAdd(args []string) error {
 	if pat == "" {
 		return fmt.Errorf("publish token add: --pat <token> required")
 	}
-
-	ts, err := loadTokenStore()
-	if err != nil {
+	if s == nil || s.Creds == nil {
+		return fmt.Errorf("publish token add: credential store not available")
+	}
+	if err := s.Creds.UnlockInteractive(); err != nil {
 		return err
 	}
-	ts.Tokens[name] = pat
-	if ts.Default == "" {
-		ts.Default = name
+	cred := Credential{
+		Name:   githubCredName(name),
+		Fields: []CredentialField{{Key: "token", Value: pat}},
 	}
-	if err := saveTokenStore(ts); err != nil {
+	if err := s.Creds.Save(cred); err != nil {
 		return err
 	}
-	fmt.Printf("token %q saved (stored in %s — plaintext, chmod 600)\n", name, tokenStorePath())
-	if ts.Default == name {
+	fmt.Printf("token %q saved (encrypted in credential store)\n", name)
+	if getDefaultTokenName(s) == "" {
+		_ = setDefaultTokenName(s, name)
 		fmt.Printf("set as default token\n")
 	}
 	return nil
 }
 
-func execPublishTokenList() error {
-	ts, err := loadTokenStore()
+func execPublishTokenList(s *Session) error {
+	if s == nil || s.Creds == nil {
+		return fmt.Errorf("credential store not available")
+	}
+	if err := s.Creds.UnlockInteractive(); err != nil {
+		return err
+	}
+	allNames, err := s.Creds.List()
 	if err != nil {
 		return err
 	}
-	if len(ts.Tokens) == 0 {
+	defName := getDefaultTokenName(s)
+	var tokenCredNames []string
+	for _, n := range allNames {
+		if strings.HasPrefix(n, githubCredPrefix) && n != githubDefaultCred {
+			tokenCredNames = append(tokenCredNames, n)
+		}
+	}
+	if len(tokenCredNames) == 0 {
 		fmt.Println("No tokens stored. Add one with: publish token add <name> --pat <token>")
 		return nil
 	}
 	fmt.Printf("%-20s  %s\n", "Name", "Token (masked)")
 	fmt.Println(strings.Repeat("─", 50))
-	for name, tok := range ts.Tokens {
-		masked := maskToken(tok)
+	for _, credName := range tokenCredNames {
+		shortName := strings.TrimPrefix(credName, githubCredPrefix)
+		cred, err := s.Creds.Load(credName)
+		if err != nil {
+			continue
+		}
+		tok, _ := cred.Get("token")
 		def := ""
-		if name == ts.Default {
+		if shortName == defName {
 			def = "  (default)"
 		}
-		fmt.Printf("%-20s  %s%s\n", name, masked, def)
+		fmt.Printf("%-20s  %s%s\n", shortName, maskToken(tok), def)
 	}
 	return nil
 }
 
-func execPublishTokenRemove(args []string) error {
+func execPublishTokenRemove(args []string, s *Session) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: publish token remove <name>")
 	}
 	name := args[0]
-	ts, err := loadTokenStore()
-	if err != nil {
+	if s == nil || s.Creds == nil {
+		return fmt.Errorf("credential store not available")
+	}
+	if err := s.Creds.UnlockInteractive(); err != nil {
 		return err
 	}
-	if _, ok := ts.Tokens[name]; !ok {
+	if err := s.Creds.Delete(githubCredName(name)); err != nil {
 		return fmt.Errorf("token %q not found", name)
 	}
-	delete(ts.Tokens, name)
-	if ts.Default == name {
-		ts.Default = ""
-		for k := range ts.Tokens {
-			ts.Default = k
-			break
+	// If we removed the default, pick a new one.
+	if getDefaultTokenName(s) == name {
+		allNames, _ := s.Creds.List()
+		newDef := ""
+		for _, n := range allNames {
+			if strings.HasPrefix(n, githubCredPrefix) && n != githubDefaultCred {
+				newDef = strings.TrimPrefix(n, githubCredPrefix)
+				break
+			}
 		}
-	}
-	if err := saveTokenStore(ts); err != nil {
-		return err
+		_ = setDefaultTokenName(s, newDef)
 	}
 	fmt.Printf("token %q removed\n", name)
 	return nil
@@ -346,7 +366,7 @@ func parsePublishArgs(args []string) (publishArgs, error) {
 
 func execPublish(args []string, s *Session) error {
 	if len(args) > 0 && args[0] == "token" {
-		return execPublishToken(args[1:])
+		return execPublishToken(args[1:], s)
 	}
 	if len(args) > 0 && args[0] == "set-repo" {
 		return execPublishSetRepo(args[1:])
@@ -400,7 +420,7 @@ func execPublish(args []string, s *Session) error {
 	// Warn about non-portable source URIs before doing any network work.
 	warnSourcePortability(artifacts, s)
 
-	token, err := resolveToken(pa.TokenName)
+	token, err := resolveToken(pa.TokenName, s)
 	if err != nil {
 		return err
 	}
@@ -717,13 +737,13 @@ func pushWithFallback(r *gogit.Repository, pa publishArgs, token, refSpec string
 // skips HTTPS view creation and uses the already-materialized MotherDuck tables.
 // sources is the list of HTTPS sources that were just pushed.
 // A no-op if no default repo is configured or the macro file doesn't exist.
-func updateRepoStagingMacro(pushTarget string, sources []sourceEntry) error {
+func updateRepoStagingMacro(pushTarget string, sources []sourceEntry, s *Session) error {
 	cfg, err := loadConfig()
 	if err != nil || cfg.GitHub.DefaultRepo == "" {
 		return nil // no default repo configured — nothing to update
 	}
 
-	token, err := resolveToken("")
+	token, err := resolveToken("", s)
 	if err != nil || token == "" {
 		return nil // no token available — skip silently
 	}
@@ -1094,7 +1114,7 @@ TOKEN MANAGEMENT
   publish token list                        list stored tokens
   publish token remove <name>               remove a token
 
-  Tokens are stored in ~/.zeaos/github/tokens.json (chmod 600, plaintext).
+  Tokens are stored encrypted in the credential store (AES-256-GCM).
   Use a fine-grained PAT with Contents: read/write scope.
 
 EXAMPLES

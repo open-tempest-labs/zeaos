@@ -201,7 +201,7 @@ func execPushData(pa *pushArgs, s *Session) error {
 			}
 			if len(sources) > 0 {
 				fmt.Printf("Updating staging macro in published repo...\n")
-				if err := updateRepoStagingMacro(pa.Target, sources); err != nil {
+				if err := updateRepoStagingMacro(pa.Target, sources, s); err != nil {
 					fmt.Printf("  ⚠  could not update repo macro: %v\n", err)
 				}
 			}

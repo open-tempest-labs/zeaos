@@ -14,7 +14,6 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/gdamore/tcell/v2"
-	duckdb "github.com/marcboeker/go-duckdb/v2"
 	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/rivo/tview"
 )
@@ -53,7 +52,7 @@ type Session struct {
 
 	db        *sql.DB
 	arrowConn *sql.Conn
-	arrow     *duckdb.Arrow
+	arrow     *arrowConnType
 }
 
 func NewSession() (*Session, error) {
@@ -86,14 +85,14 @@ func NewSession() (*Session, error) {
 	}
 
 	// Obtain the Arrow accessor bound to the pinned driver connection.
-	var ar *duckdb.Arrow
+	var ar *arrowConnType
 	if err := arrowConn.Raw(func(c any) error {
 		dc, ok := c.(driver.Conn)
 		if !ok {
 			return fmt.Errorf("unexpected driver type %T", c)
 		}
 		var err error
-		ar, err = duckdb.NewArrowFromConn(dc)
+		ar, err = newArrowFromConn(dc)
 		return err
 	}); err != nil {
 		arrowConn.Close()

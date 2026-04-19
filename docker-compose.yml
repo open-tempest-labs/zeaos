@@ -2,6 +2,7 @@ services:
 
   # ── Interactive ZeaOS REPL ────────────────────────────────────────────────
   zeaos:
+    image: ${ZEAOS_IMAGE:-ghcr.io/open-tempest-labs/zeaos:main}
     build:
       context: .
       target: runtime
