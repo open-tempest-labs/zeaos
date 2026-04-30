@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -688,7 +689,8 @@ func memUsage() string {
 	return fmt.Sprintf("%dMB", m.Alloc/1024/1024)
 }
 
-// ShowHist renders a tview TreeView of the table lineage DAG.
+// ShowHist renders an interactive tview TreeView of the table lineage DAG.
+// Keys: Enter=open zeaview  d=quickview details  c=copy name  Space=expand/collapse  q/Esc=quit
 func (s *Session) ShowHist() {
 	if len(s.Registry) == 0 {
 		fmt.Println("(no tables in session)")
@@ -696,6 +698,8 @@ func (s *Session) ShowHist() {
 	}
 
 	app := tview.NewApplication()
+	pages := tview.NewPages()
+
 	root := tview.NewTreeNode("session").SetColor(tcell.ColorYellow)
 	tree := tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
 
@@ -714,7 +718,9 @@ func (s *Session) ShowHist() {
 		if e.SourceURI != "" {
 			label += "  ← " + e.SourceURI
 		}
-		node := tview.NewTreeNode(label).SetColor(tcell.ColorGreen)
+		node := tview.NewTreeNode(label).
+			SetColor(tcell.ColorGreen).
+			SetReference(name)
 		parent.AddChild(node)
 		for childName, childEntry := range s.Registry {
 			if childEntry.Parent == name {
@@ -734,17 +740,138 @@ func (s *Session) ShowHist() {
 		}
 	}
 
+	// Enter: open full zeaview, suspend hist and resume when viewer exits.
+	tree.SetSelectedFunc(func(node *tview.TreeNode) {
+		name, ok := node.GetReference().(string)
+		if !ok || name == "" {
+			return
+		}
+		app.Suspend(func() {
+			_ = execZeaview(name, -1, s)
+		})
+	})
+
 	tree.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape || event.Rune() == 'q' {
+		switch event.Key() {
+		case tcell.KeyEscape:
 			app.Stop()
+			return nil
+		}
+		switch event.Rune() {
+		case 'q':
+			app.Stop()
+			return nil
+		case 'd':
+			node := tree.GetCurrentNode()
+			if node == nil {
+				return nil
+			}
+			name, ok := node.GetReference().(string)
+			if !ok || name == "" {
+				return nil
+			}
+			s.showHistQuickview(app, pages, tree, name)
+			return nil
+		case 'c':
+			node := tree.GetCurrentNode()
+			if node == nil {
+				return nil
+			}
+			if name, ok := node.GetReference().(string); ok && name != "" {
+				histCopyToClipboard(name)
+			}
+			return nil
+		case ' ':
+			node := tree.GetCurrentNode()
+			if node != nil {
+				node.SetExpanded(!node.IsExpanded())
+			}
+			return nil
 		}
 		return event
 	})
 
 	frame := tview.NewFrame(tree).
-		AddText("ZeaOS — Table Lineage  (q/Esc to close)", true, tview.AlignCenter, tcell.ColorWhite)
+		AddText("ZeaOS — Table Lineage", true, tview.AlignCenter, tcell.ColorYellow).
+		AddText("Enter:view  d:details  c:copy  Space:expand  q:quit", false, tview.AlignCenter, tcell.ColorWhite)
 
-	if err := app.SetRoot(frame, true).Run(); err != nil {
+	pages.AddPage("main", frame, true, true)
+
+	if err := app.SetRoot(pages, true).SetFocus(tree).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "hist: %v\n", err)
 	}
+}
+
+// showHistQuickview pushes a details modal over the hist tree for the named table.
+func (s *Session) showHistQuickview(app *tview.Application, pages *tview.Pages, tree *tview.TreeView, name string) {
+	e, ok := s.Registry[name]
+	if !ok {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[yellow]%s[-]\n\n", name))
+	sb.WriteString(fmt.Sprintf("[white]Rows:[-]  %d\n", e.RowCount))
+	sb.WriteString(fmt.Sprintf("[white]Cols:[-]  %d\n", e.ColCount))
+
+	if e.schema != nil {
+		sb.WriteString("\n[yellow]Schema[-]\n")
+		for i := 0; i < e.schema.NumFields(); i++ {
+			f := e.schema.Field(i)
+			sb.WriteString(fmt.Sprintf("  %-24s  %s\n", f.Name, f.Type))
+		}
+	}
+
+	if e.SourceURI != "" {
+		sb.WriteString(fmt.Sprintf("\n[white]Source:[-]  %s\n", e.SourceURI))
+	}
+	if e.Parent != "" {
+		sb.WriteString(fmt.Sprintf("[white]Parent:[-]  %s\n", e.Parent))
+	}
+	if len(e.Ops) > 0 {
+		sb.WriteString(fmt.Sprintf("[white]Ops:[-]     %s\n", strings.Join(e.Ops, " | ")))
+	}
+	if len(e.PushRecords) > 0 {
+		sb.WriteString("\n[yellow]Push History[-]\n")
+		for _, pr := range e.PushRecords {
+			sb.WriteString(fmt.Sprintf("  %s  →  %s.%s  (%d rows)  %s\n",
+				pr.Target, pr.Schema, pr.TableName, pr.RowCount,
+				pr.PushedAt.Format("2006-01-02 15:04")))
+		}
+	}
+
+	text := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetText(sb.String())
+
+	text.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape || event.Rune() == 'q' {
+			pages.RemovePage("quickview")
+			app.SetFocus(tree)
+			return nil
+		}
+		return event
+	})
+
+	modal := tview.NewFrame(text).
+		SetBorders(1, 1, 1, 1, 2, 2).
+		AddText(fmt.Sprintf(" %s ", name), true, tview.AlignCenter, tcell.ColorYellow).
+		AddText(" Esc: back  Enter: open in zeaview ", false, tview.AlignCenter, tcell.ColorWhite)
+
+	pages.AddPage("quickview", modal, true, true)
+	app.SetFocus(text)
+}
+
+// histCopyToClipboard writes text to the system clipboard (macOS pbcopy or xclip on Linux).
+func histCopyToClipboard(text string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	default:
+		cmd = exec.Command("xclip", "-selection", "clipboard")
+	}
+	cmd.Stdin = strings.NewReader(text)
+	_ = cmd.Run()
 }
