@@ -741,14 +741,28 @@ func (s *Session) ShowHist() {
 	}
 
 	// Enter: open full zeaview, suspend hist and resume when viewer exits.
+	// For large tables, show a limit prompt within hist before suspending.
 	tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		name, ok := node.GetReference().(string)
 		if !ok || name == "" {
 			return
 		}
-		app.Suspend(func() {
-			_ = execZeaview(name, -1, s)
-		})
+		entry, err := s.Get(name)
+		if err != nil {
+			return
+		}
+
+		launch := func(limit int64) {
+			app.Suspend(func() {
+				_ = execZeaview(name, limit, s)
+			})
+		}
+
+		if entry.RowCount > zeaviewLargeRowThreshold {
+			s.showHistLimitPrompt(app, pages, tree, name, entry.RowCount, launch)
+			return
+		}
+		launch(-1)
 	})
 
 	tree.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -861,6 +875,43 @@ func (s *Session) showHistQuickview(app *tview.Application, pages *tview.Pages, 
 
 	pages.AddPage("quickview", modal, true, true)
 	app.SetFocus(text)
+}
+
+// showHistLimitPrompt presents a modal within hist asking the user how many rows to load
+// when a table exceeds zeaviewLargeRowThreshold. onChoice is called with the chosen limit.
+func (s *Session) showHistLimitPrompt(app *tview.Application, pages *tview.Pages, tree *tview.TreeView, name string, rowCount int64, onChoice func(int64)) {
+	msg := fmt.Sprintf("%s has %s rows.\nChoose how many to load into the viewer.", name, formatComma(rowCount))
+
+	modal := tview.NewModal().
+		SetText(msg).
+		AddButtons([]string{"First 500k", "All rows", "Cancel"}).
+		SetDoneFunc(func(idx int, _ string) {
+			pages.RemovePage("largelimit")
+			app.SetFocus(tree)
+			switch idx {
+			case 0:
+				onChoice(500_000)
+			case 1:
+				onChoice(0) // 0 = full
+			// case 2: cancel — do nothing
+			}
+		})
+
+	pages.AddPage("largelimit", modal, true, true)
+	app.SetFocus(modal)
+}
+
+// formatComma formats an int64 with thousands separators.
+func formatComma(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	out := make([]byte, 0, len(s)+len(s)/3)
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, byte(c))
+	}
+	return string(out)
 }
 
 // histCopyToClipboard writes text to the system clipboard (macOS pbcopy or xclip on Linux).
