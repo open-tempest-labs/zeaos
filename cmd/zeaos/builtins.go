@@ -246,16 +246,13 @@ func execPipe(cmd *Cmd, src *TableEntry, s *Session) error {
 		return err
 	}
 
-	// GROUP BY and PIVOT trigger a DuckDB v1.8.5 crash in
-	// duckdb_execute_prepared_arrow when the source is an Arrow C stream.
-	// Route those through an intermediate in-memory DuckDB table instead.
-	needsTable := false
-	for _, op := range otherOps {
-		if op.Kind == "group" || op.Kind == "pivot" {
-			needsTable = true
-			break
-		}
-	}
+	// duckdb_execute_prepared_arrow (the Arrow query interface) segfaults whenever
+	// the source is an Arrow C stream view — not just GROUP BY/PIVOT but any op.
+	// When the source has in-memory Arrow records, always copy to a native DuckDB
+	// table first (materializeViaTable) so the query runs against native data.
+	// When records are nil (spilled to Parquet), DuckDB reads the file directly
+	// and the Arrow query interface is safe.
+	needsTable := activeSrc.records != nil
 
 	var entry *TableEntry
 	if needsTable {
