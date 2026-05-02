@@ -310,7 +310,7 @@ func execBuiltin(cmd *Cmd, s *Session) error {
 		return execZeaviewSplit(tableNames, orientation, s)
 	case "credentials":
 		return execCredentials(cmd.Args, s)
-	case "hist":
+	case "hist", "atlas":
 		s.ShowHist()
 		return nil
 	case "status":
@@ -1091,7 +1091,8 @@ SESSION
   drop --from <plugin>               remove all tables produced by a plugin
   save <table> <path>                export to file  (.parquet / .csv / .json)
                                      path may be a zea:// URL
-  hist                               table lineage DAG (TUI)
+  atlas                              navigate session waypoints (TUI)
+  hist                               alias for atlas
   status                             session status: tables, drive, memory (TUI)
 
 VIEWER
