@@ -25,23 +25,24 @@ Everything runs locally. The only prerequisites are Docker Desktop and a termina
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac, Windows, or Linux)
-- Git (to clone the repo) or the ZeaOS release archive
+- No repo clone required
 
 > **Windows note:** Docker Desktop on Windows uses Linux containers. ZeaOS runs fully in this mode. The only feature not available in containers is ZeaDrive FUSE cloud mounting — all other operations including S3 push, Iceberg write/read, and local file access work normally.
 
 ---
 
-## Step 1 — Clone and Start
+## Step 1 — Start
 
 ```bash
-git clone https://github.com/open-tempest-labs/zeaos
-cd zeaos
-
+mkdir zeaos && cd zeaos
+curl -fsSL https://raw.githubusercontent.com/open-tempest-labs/zeaos/main/docker-compose.yml -o docker-compose.yml
+mkdir data
+docker compose pull
 docker compose up -d minio minio-init
 docker compose run --rm zeaos
 ```
 
-The first run builds the ZeaOS image and downloads Go dependencies — this takes a few minutes. Subsequent starts are fast.
+`docker compose pull` fetches the pre-built image from GHCR — no build step, no Go toolchain required. Subsequent starts are fast.
 
 You should see:
 
@@ -161,7 +162,46 @@ ZeaOS> status
 
 ---
 
-## Step 5 — Push to MinIO as Apache Iceberg
+## Step 5 — Navigate Your Session with Atlas
+
+After a few transforms, open the session atlas to see what you have and how it's connected:
+
+```
+ZeaOS> atlas
+```
+
+The atlas opens a TUI showing your tables as a lineage tree — each derived table nested under its source. Navigate with arrow keys; the right panel shows the schema, row count, and derivation chain for the selected table.
+
+Key bindings inside the atlas:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move between waypoints |
+| `Enter` | Open selected table in zeaview |
+| `d` | Quickview — schema, stats, push history |
+| `c` | Copy table name to clipboard |
+| `Space` | Expand / collapse a node |
+| `q` / `Esc` | Close |
+
+To compare two tables side-by-side, exit the atlas and open a split view:
+
+```
+ZeaOS> zeaview zone_revenue top_zones
+```
+
+Or side-by-side:
+
+```
+ZeaOS> zeaview zone_revenue top_zones --orientation=left-right
+```
+
+Use `Tab` to cycle focus between panes.
+
+See [Navigating the Zea: Atlas, Waypoints, and Session Orientation](atlas-waypoints.md) for a deeper look at the navigation model.
+
+---
+
+## Step 6 — Push to MinIO as Apache Iceberg
 
 Push `zone_revenue` to MinIO as an Apache Iceberg v2 table:
 
@@ -217,7 +257,7 @@ zea://s3-data/analytics/analytics/payment_pivot
 
 ---
 
-## Step 6 — Query Iceberg Tables Back with DuckDB
+## Step 7 — Query Iceberg Tables Back with DuckDB
 
 Read the Iceberg tables back from MinIO inside the ZeaOS session:
 
@@ -254,7 +294,7 @@ The Iceberg tables written by ZeaOS are standard Apache Iceberg v2 — any tool 
 
 ---
 
-## Step 7 — Save Your Session
+## Step 8 — Save Your Session
 
 ZeaOS sessions persist automatically across container restarts via the `zeaos-session` Docker volume. Tables are spilled to Parquet in `~/.zeaos/tables/` and reloaded next time you start:
 

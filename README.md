@@ -49,11 +49,13 @@ zeaos
 
 **Option B — Docker Compose (macOS, Linux, Windows)**
 
-No install required. Spins up ZeaOS alongside a local MinIO instance for Iceberg push:
+No install required. No repo clone required. Spins up ZeaOS alongside a local MinIO instance for Iceberg push:
 
 ```sh
-git clone https://github.com/open-tempest-labs/zeaos
-cd zeaos
+mkdir zeaos && cd zeaos
+curl -fsSL https://raw.githubusercontent.com/open-tempest-labs/zeaos/main/docker-compose.yml -o docker-compose.yml
+mkdir data
+docker compose pull
 docker compose up -d minio minio-init
 docker compose run --rm zeaos
 ```
@@ -200,6 +202,7 @@ The exported bundle contains model `.sql` files and `sources.yml` referencing th
 t = load <file>                    # Parquet, CSV, TSV, JSON, JSONL
 t = load https://host/file.parquet # Remote file — downloaded then loaded
 t = load zea://data/file.parquet   # Via ZeaDrive (local or cloud)
+t = load /data/file.csv --no-header  # CSV with no header row
 t = zeaql "SELECT ..."             # Arbitrary SQL over session tables
 ```
 
@@ -249,7 +252,8 @@ Push to: my_db.nyc_taxi [Y/n] y
 list                         # List session tables
 drop <table>                 # Remove table from session
 save <table> <path>          # Write to file (.parquet / .csv / .json / zea://)
-hist                         # Table lineage DAG (TUI)
+atlas                        # Navigate session waypoints — lineage DAG (TUI)
+hist                         # Alias for atlas
 status                       # Session state: tables, drive, memory (TUI)
 describe <table>             # Schema, row/col counts, lineage
 ```
@@ -261,6 +265,9 @@ zeaview <table>              # TUI viewer
                              #   s  sort    f  filter
                              #   g  graph   e  export
                              #   d  schema  ?  help
+
+zeaview t1 t2                # Split view — two tables stacked
+zeaview t1 t2 --orientation=left-right   # Side-by-side
 ```
 
 ### ZeaDrive
@@ -357,6 +364,7 @@ make test
 ## Further Reading
 
 - [Getting Started with Docker and MinIO](docs/getting-started-docker.md)
+- [Navigating the Zea: Atlas, Waypoints, and Session Orientation](docs/atlas-waypoints.md)
 - [ZeaOS → dbt Export](docs/dbt-export.md)
 - [From Exploration to Production: Analysis That Knows Where It Came From](docs/whitepaper-exploration-to-production.md)
 - [Home Energy Monitoring with ZeaOS, MinIO, and Iceberg](docs/homelab-minio-iceberg.md)
